@@ -4,7 +4,7 @@
 //! stand-in agents and exercise framed handshake, forward-lane, reverse-lane,
 //! reconnect, cache, and cancellation behavior over `<id>.control.sock`.
 
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
@@ -65,6 +65,25 @@ fn wait_for(path: &Path, what: &str) {
             panic!("{what} never appeared at {}", path.display());
         }
         std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+// A socket path can exist before listen() completes.
+fn connect_control(path: &Path) -> UnixStream {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match UnixStream::connect(path) {
+            Ok(stream) => return stream,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::NotFound | ErrorKind::ConnectionRefused
+                ) && Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => panic!("connect control socket {}: {error}", path.display()),
+        }
     }
 }
 
@@ -184,7 +203,7 @@ fn runner_proxies_agent_requests_over_the_control_channel() {
         socket.display()
     );
 
-    let mut ctl = UnixStream::connect(&control).expect("connect control socket");
+    let mut ctl = connect_control(&control);
     ctl.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     let hello = read_frame(&mut ctl);
     assert_eq!(hello["kind"], "hello", "first control frame is Hello");
@@ -403,7 +422,7 @@ for line in sys.stdin:
 
     // The stalled peer establishes the session, then stops reading so the
     // large notify's write times out and the frame is requeued.
-    let mut stalled = UnixStream::connect(&control).expect("connect stalled peer");
+    let mut stalled = connect_control(&control);
     attach(&mut stalled);
     initialize(&mut stalled);
     write_frame(
@@ -421,7 +440,7 @@ for line in sys.stdin:
 
     // The replacement peer is admitted only after the stalled writer times out;
     // it resumes and receives the requeued large frame.
-    let mut accepted = UnixStream::connect(&control).expect("connect replacement peer");
+    let mut accepted = connect_control(&control);
     attach(&mut accepted);
     initialize(&mut accepted);
     write_frame(
@@ -539,7 +558,7 @@ for line in sys.stdin:
     wait_for(&record, "registry record");
     wait_for(&control, "control socket");
 
-    let mut ctl = UnixStream::connect(&control).expect("connect control socket");
+    let mut ctl = connect_control(&control);
     ctl.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     assert_eq!(read_frame(&mut ctl)["kind"], "hello");
     write_frame(
@@ -601,7 +620,7 @@ for line in sys.stdin:
     assert_eq!(completion["kind"], "prompt_completed");
     drop(ctl);
 
-    let mut resumed = UnixStream::connect(&control).expect("reconnect control socket");
+    let mut resumed = connect_control(&control);
     resumed
         .set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
@@ -789,7 +808,7 @@ for line in sys.stdin:
         .lines()
         .filter(|method| *method == "initialize")
         .count();
-    let mut ctl = UnixStream::connect(&control).expect("connect replacement control");
+    let mut ctl = connect_control(&control);
     ctl.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     assert_eq!(read_frame(&mut ctl)["kind"], "hello");
     write_frame(
@@ -951,7 +970,7 @@ for line in sys.stdin:
 
     // --- First attach: the runner runs the handshake against the agent. ---
     {
-        let mut ctl = UnixStream::connect(&control).expect("connect control socket");
+        let mut ctl = connect_control(&control);
         ctl.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         let hello = read_frame(&mut ctl);
         assert_eq!(hello["kind"], "hello");
@@ -992,7 +1011,7 @@ for line in sys.stdin:
 
     // --- Second attach: the runner replays the cache, no agent contact. ---
     {
-        let mut ctl = UnixStream::connect(&control).expect("reconnect control socket");
+        let mut ctl = connect_control(&control);
         ctl.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         let hello = read_frame(&mut ctl);
         assert_eq!(hello["kind"], "hello");
@@ -1105,7 +1124,7 @@ fn runner_load_uses_requested_id_and_caches_response() {
     wait_for(&control, "control socket");
 
     {
-        let mut ctl = UnixStream::connect(&control).expect("connect control socket");
+        let mut ctl = connect_control(&control);
         ctl.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         assert_eq!(read_frame(&mut ctl)["kind"], "hello");
         write_frame(
@@ -1144,7 +1163,7 @@ fn runner_load_uses_requested_id_and_caches_response() {
     // Reattach and repeat the handshake inputs. Both responses must come from
     // the runner cache, preserving the original raw load result and id.
     {
-        let mut ctl = UnixStream::connect(&control).expect("reconnect control socket");
+        let mut ctl = connect_control(&control);
         ctl.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         assert_eq!(read_frame(&mut ctl)["kind"], "hello");
         write_frame(
@@ -1267,7 +1286,7 @@ for line in sys.stdin:
     wait_for(&record, "registry record");
     wait_for(&control, "control socket");
 
-    let mut ctl = UnixStream::connect(&control).expect("connect control socket");
+    let mut ctl = connect_control(&control);
     ctl.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     let hello = read_frame(&mut ctl);
     assert_eq!(hello["kind"], "hello");
@@ -1369,7 +1388,9 @@ for line in sys.stdin:
             .unwrap(),
     );
     wait_for(&control, "control socket");
-    let mut first = tokio::net::UnixStream::connect(&control).await.unwrap();
+    let first = connect_control(&control);
+    first.set_nonblocking(true).unwrap();
+    let mut first = tokio::net::UnixStream::from_std(first).unwrap();
     assert!(matches!(
         control_protocol::read_frame(&mut first).await.unwrap(),
         Some(ControlBody::Hello { .. })
@@ -1543,7 +1564,9 @@ for line in sys.stdin:
     wait_for(&control, "control socket");
 
     // First daemon: establish the native session, then detach.
-    let mut first = tokio::net::UnixStream::connect(&control).await.unwrap();
+    let first = connect_control(&control);
+    first.set_nonblocking(true).unwrap();
+    let mut first = tokio::net::UnixStream::from_std(first).unwrap();
     assert!(matches!(
         control_protocol::read_frame(&mut first).await.unwrap(),
         Some(ControlBody::Hello { .. })
@@ -1706,7 +1729,7 @@ for line in sys.stdin:
                 .unwrap(),
         );
         wait_for(&control, "control socket");
-        let mut first = UnixStream::connect(&control).unwrap();
+        let mut first = connect_control(&control);
         first
             .set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
@@ -1833,7 +1856,7 @@ for line in sys.stdin:
     );
     wait_for(&control, "native-identity control socket");
     let attach = || {
-        let mut stream = UnixStream::connect(&control).unwrap();
+        let mut stream = connect_control(&control);
         stream
             .set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();

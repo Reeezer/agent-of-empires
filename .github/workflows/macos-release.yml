@@ -9,6 +9,8 @@ permissions:
 jobs:
   build:
     runs-on: ${{ matrix.os }}
+    env:
+      LZMA_API_STATIC: '1'
     strategy:
       fail-fast: false
       matrix:
@@ -39,6 +41,7 @@ jobs:
           cargo test --locked --doc
           cargo build --locked --profile dev-release --bin aoe
           target/dev-release/aoe --version
+          otool -L target/dev-release/aoe | awk 'NR > 1 && $1 !~ "^(/usr/lib/|/System/Library/)" { print "Unexpected non-system library: " $1; bad=1 } END { exit bad }'
       - name: Package
         env:
           ASSET: ${{ matrix.asset }}
