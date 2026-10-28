@@ -365,8 +365,8 @@ async function handlePrompt(params, client) {
     title: "Reading shim file",
     kind: "read",
     status: "pending",
-    locations: [{ path: "/tmp/shim.txt" }],
-    rawInput: { path: "/tmp/shim.txt" },
+    locations: [{ path: "./shim.txt" }],
+    rawInput: { path: "./shim.txt" },
   });
   await pause();
 
