@@ -16,10 +16,11 @@ Resolve conflicts rather than discarding either upstream fixes or fork behavior.
 Keep the update cache separate from the official build's cache.
 
 Set the root package version in `Cargo.toml` and `Cargo.lock` to the upstream
-version plus `-mac.1`, incrementing the final number for another fork release
+version plus `+mac.1`, incrementing the final number for another fork release
 on the same upstream version. Run `python3 scripts/test-macos-install.py`,
 `cargo fmt --all --check`, `cargo clippy --locked -- -D warnings` and
-`cargo test --locked`. Verify the dashboard with isolated sample data.
+`cargo nextest run --locked --no-fail-fast` and `cargo test --locked --doc`.
+Use the same per-test process isolation as upstream CI. Verify the dashboard with isolated sample data.
 
 When publication is requested, commit with a GitHub noreply email, push to
 this fork's `main`, and run `gh workflow run macos-release.yml --repo

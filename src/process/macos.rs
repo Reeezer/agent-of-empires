@@ -1141,6 +1141,8 @@ mod tests {
         let mut child = OwnedChild(
             Command::new("sh")
                 .args(["-c", "printf 'ready\n'; IFS= read -r line"])
+                // macOS can hide a system shell's environment; the socket also proves ownership.
+                .arg(&socket)
                 .env("TMPDIR", root.path())
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())

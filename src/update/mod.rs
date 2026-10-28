@@ -252,7 +252,7 @@ pub(crate) fn is_newer_version(latest: &str, current: &str) -> bool {
 }
 
 fn version_parts(v: &str) -> Vec<u32> {
-    v.split(['.', '-']).filter_map(|s| s.parse().ok()).collect()
+    v.split(['.', '+']).filter_map(|s| s.parse().ok()).collect()
 }
 
 /// An empty or unparsable latest is `Unknown`, never `Current`.
@@ -353,11 +353,11 @@ mod tests {
             ("0.4.5", "0.4.5", false),
             ("1.0.0", "1.0.1", false),
             ("0.4.0", "0.4.5", false),
-            ("1.21.0-mac.2", "1.21.0-mac.1", true),
-            ("1.21.1-mac.1", "1.21.0-mac.9", true),
-            ("1.22.0-mac.1", "1.21.9-mac.9", true),
-            ("1.21.0-mac.1", "1.21.0-mac.1", false),
-            ("1.21.0-mac.1", "1.21.0-mac.2", false),
+            ("1.21.0+mac.2", "1.21.0+mac.1", true),
+            ("1.21.1+mac.1", "1.21.0+mac.9", true),
+            ("1.22.0+mac.1", "1.21.9+mac.9", true),
+            ("1.21.0+mac.1", "1.21.0+mac.1", false),
+            ("1.21.0+mac.1", "1.21.0+mac.2", false),
         ] {
             assert_eq!(
                 is_newer_version(candidate, baseline),
