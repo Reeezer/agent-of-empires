@@ -73,7 +73,17 @@ def fence(pid, expected):
     fence_many([(pid, expected)])
 
 
+def safe_path(path):
+    resolved = os.path.realpath(path)
+    base_dir = os.path.realpath(os.getcwd())
+    if resolved != base_dir and not resolved.startswith(base_dir + os.sep):
+        raise ValueError(f"path {path!r} is outside the allowed directory")
+    return resolved
+
+
 def prepare(root, workers, token):
+    root = safe_path(root)
+    workers = safe_path(workers)
     fd = os.pidfd_open(os.getpid())
     try:
         signal.pidfd_send_signal(fd, 0)
