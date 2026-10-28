@@ -3528,7 +3528,7 @@ mod tests {
         std::fs::write(
             crate::session::get_app_dir()
                 .unwrap()
-                .join("update_cache.json"),
+                .join("mac_update_cache.json"),
             cache.to_string(),
         )
         .unwrap();
