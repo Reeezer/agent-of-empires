@@ -55,7 +55,7 @@ fn spawn_fixture(latest_version: &str) -> FixtureServer {
 
             let app = axum::Router::new()
                 .route(
-                    "/repos/agent-of-empires/agent-of-empires/releases/latest",
+                    "/repos/Reeezer/agent-of-empires/releases/latest",
                     axum::routing::get(move || {
                         let body = release_json();
                         async move {
@@ -67,7 +67,7 @@ fn spawn_fixture(latest_version: &str) -> FixtureServer {
                     }),
                 )
                 .route(
-                    "/repos/agent-of-empires/agent-of-empires/releases",
+                    "/repos/Reeezer/agent-of-empires/releases",
                     axum::routing::get(move || {
                         let body = format!("[{}]", releases_json());
                         async move {

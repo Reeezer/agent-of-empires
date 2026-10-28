@@ -10,7 +10,7 @@ use tracing::warn;
 
 use crate::session::{get_app_dir, get_update_settings};
 
-const GITHUB_OWNER: &str = "agent-of-empires";
+const GITHUB_OWNER: &str = "Reeezer";
 const GITHUB_REPO: &str = "agent-of-empires";
 
 pub const UPDATE_CHECK_INTERVAL_HOURS: u64 = 24;
@@ -28,7 +28,7 @@ pub fn release_page_url(version: &str) -> String {
         format!("v{}", version)
     };
     format!(
-        "https://github.com/agent-of-empires/agent-of-empires/releases/tag/{}",
+        "https://github.com/Reeezer/agent-of-empires/releases/tag/{}",
         tag
     )
 }
@@ -77,7 +77,7 @@ struct UpdateCache {
 }
 
 fn cache_path() -> Result<PathBuf> {
-    Ok(get_app_dir()?.join("update_cache.json"))
+    Ok(get_app_dir()?.join("mac_update_cache.json"))
 }
 
 fn load_cache() -> Option<UpdateCache> {
@@ -252,7 +252,7 @@ pub(crate) fn is_newer_version(latest: &str, current: &str) -> bool {
 }
 
 fn version_parts(v: &str) -> Vec<u32> {
-    v.split('.').filter_map(|s| s.parse().ok()).collect()
+    v.split(['.', '-']).filter_map(|s| s.parse().ok()).collect()
 }
 
 /// An empty or unparsable latest is `Unknown`, never `Current`.
@@ -353,6 +353,11 @@ mod tests {
             ("0.4.5", "0.4.5", false),
             ("1.0.0", "1.0.1", false),
             ("0.4.0", "0.4.5", false),
+            ("1.21.0-mac.2", "1.21.0-mac.1", true),
+            ("1.21.1-mac.1", "1.21.0-mac.9", true),
+            ("1.22.0-mac.1", "1.21.9-mac.9", true),
+            ("1.21.0-mac.1", "1.21.0-mac.1", false),
+            ("1.21.0-mac.1", "1.21.0-mac.2", false),
         ] {
             assert_eq!(
                 is_newer_version(candidate, baseline),

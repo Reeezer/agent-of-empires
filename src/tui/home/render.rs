@@ -970,6 +970,8 @@ impl HomeView {
         // Ctrl+L toggle is on and a session is selected). The owned line is shown
         // just above the status bar.
         self.refresh_last_prompt();
+        self.usage.refresh(self.instances.values().cloned());
+        self.background.refresh(self.instances.values());
         let last_prompt = self.last_prompt_footer_line();
 
         // Keep temporary feedback and the leader menu available with the bar hidden.
@@ -1790,7 +1792,14 @@ impl HomeView {
                                 && !inst.is_archived()
                                 && !inst.is_snoozed()
                                 && matches!(inst.status, Status::Idle | Status::Unknown);
-                            let color = if is_shown_dormant && !unread_resting {
+                            // A stopped agent waiting on a command or monitor it started
+                            // waits on that, not on the user. A working agent stays green.
+                            let background = !is_shown_dormant
+                                && !unread_resting
+                                && self.background.is_watching(inst);
+                            let color = if background {
+                                theme.favorite
+                            } else if is_shown_dormant && !unread_resting {
                                 theme.dormant()
                             } else {
                                 match inst.status {
@@ -1816,6 +1825,8 @@ impl HomeView {
                                 // too subtle (#2088 review).
                                 icon = ICON_UNREAD;
                                 modifier = ratatui::style::Modifier::BOLD;
+                            } else if background {
+                                icon = spinner_running(&inst.created_at);
                             }
                             (
                                 RowSeed {
@@ -1976,7 +1987,15 @@ impl HomeView {
             && self.paired_terminal_running_for_display(inst))
         .then(|| format!(" {ICON_TERMINAL}"));
         let badge_width =
-            badge_text.map_or(0, |s| s.len()) + terminal_badge.as_ref().map_or(0, |s| s.len());
+            badge_text.map_or(0, str::len) + terminal_badge.as_ref().map_or(0, |badge| badge.len());
+        let usage_budget = room.saturating_sub(10 + badge_width);
+        let usage = self
+            .usage
+            .label(inst, usage_budget.saturating_sub(1))
+            .filter(|label| !label.is_empty())
+            .map(|label| format!(" {label}"));
+        let usage_width = usage.as_ref().map_or(0, |label| rendered_width(label));
+        let badge_width = badge_width + usage_width;
         let age = if self.show_activity_age {
             row_age(inst, in_attention)
         } else {
@@ -2019,6 +2038,17 @@ impl HomeView {
             ));
         }
 
+        if let Some(usage) = usage {
+            let usage_style = Style::default().fg(theme.dimmed);
+            line_spans.push(Span::styled(
+                usage,
+                if is_selected {
+                    selected_row_style(usage_style, theme)
+                } else {
+                    usage_style
+                },
+            ));
+        }
         if let Some(badge) = terminal_badge {
             let badge_style = Style::default().fg(theme.terminal_active);
             line_spans.push(Span::styled(

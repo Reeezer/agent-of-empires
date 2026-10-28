@@ -24,6 +24,8 @@ aoe
 
 ## Your first session
 
+Claude Code and Codex session rows show their estimated API cost, refreshed in the background every 15 seconds. Unknown values show `?`. Cost estimates use [ccusage](https://ccusage.com/guide/session-reports) and require Node.js and npx. Run `npx --yes ccusage@20.0.40 --version` once to cache the helper; AoE runs it offline afterwards. Subscription estimates represent equivalent API spend. Claude Code rows also show how much of the model's context window the latest reply used, such as `$4.32 46%`, to tell when to compact. A Claude Code row with a spinning icon in the favorite color has a stopped agent whose shell command or monitor is still running, so it is not waiting on you. A working agent stays green. Sessions need a captured native conversation ID before usage can be matched.
+
 Press `n` and fill in the path to your project (or leave `.`), or run `aoe add /path/to/project`. The session appears in the dashboard as **Idle**. Select it and press `Enter` to attach; you are now inside a tmux session running the agent. `Ctrl+b d` detaches back to the TUI. If aoe itself runs inside tmux, attaching switches your client to the agent's session and `Ctrl+b L` switches back.
 
 Press `t` to toggle between the structured view and the paired shell terminal, where you can run builds and git commands without interrupting the agent.

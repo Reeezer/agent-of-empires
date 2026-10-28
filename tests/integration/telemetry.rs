@@ -71,7 +71,7 @@ fn write_update_cache(latest: &str, releases: &[&str]) {
         "releases": releases_json,
     });
     std::fs::write(
-        dir.join("update_cache.json"),
+        dir.join("mac_update_cache.json"),
         serde_json::to_string(&cache).expect("serialize cache"),
     )
     .expect("write update cache");

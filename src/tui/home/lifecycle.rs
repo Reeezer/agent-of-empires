@@ -204,6 +204,8 @@ impl HomeView {
         };
 
         let mut view = Self {
+            usage: usage::UsagePoller::new(),
+            background: background::BackgroundPoller::new(),
             storages,
             active_profile,
             instances: Self::build_instances_map(all_instances),

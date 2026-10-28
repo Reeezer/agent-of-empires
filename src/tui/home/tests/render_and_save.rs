@@ -2,6 +2,98 @@
 
 use super::*;
 
+#[test]
+#[serial]
+fn session_rows_show_only_cost_without_overflowing() {
+    for (agent, model) in [("claude", "claude-opus-5-5"), ("codex", "gpt-6.1-sol")] {
+        let mut instance = Instance::new("fix-login", "/tmp/project");
+        instance.tool = agent.into();
+        instance.agent_model = Some(model.into());
+        instance.agent_session_id = Some("aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa".into());
+        let mut env = seeded_env(test_home(), &[instance], true);
+        let item = env
+            .view
+            .flat_items
+            .iter()
+            .find(|item| matches!(item, Item::Session { .. }))
+            .unwrap()
+            .clone();
+        let instance = env.view.instances.values().next().unwrap().clone();
+        env.view.usage.seed_for_test(&instance, 4.32, Some(46));
+        for show_age in [false, true] {
+            env.view.show_activity_age = show_age;
+            for width in [12, 24, 42, 80] {
+                let line = env.view.render_item_line(
+                    &item,
+                    false,
+                    false,
+                    &crate::tui::styles::Theme::default(),
+                    width,
+                    false,
+                );
+                let text = line
+                    .spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>();
+                assert!(line.width() <= width as usize, "{width}: {text}");
+                if width >= 24 {
+                    assert!(text.contains("$4.32"), "{width}: {text}");
+                }
+                if width == 80 {
+                    assert!(text.contains("$4.32 46%"), "{text}");
+                    assert!(!text.contains(model), "{text}");
+                    assert!(!text.contains("model ?"), "{text}");
+                    assert!(text.contains("fix-login"), "{text}");
+                    if !show_age {
+                        println!("{text}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+#[serial]
+fn a_stopped_agent_waiting_on_its_watch_spins_in_its_own_color() {
+    use crate::session::Status;
+    let mut instance = Instance::new("fix-login", "/tmp/project");
+    instance.tool = "claude".into();
+    let mut env = seeded_env(test_home(), &[instance], true);
+    let item = env
+        .view
+        .flat_items
+        .iter()
+        .find(|item| matches!(item, Item::Session { .. }))
+        .unwrap()
+        .clone();
+    let id = env.view.instances.values().next().unwrap().id.clone();
+    let theme = crate::tui::styles::Theme::default();
+    let spins = |view: &HomeView| {
+        view.render_item_line(&item, false, false, &theme, 80, false)
+            .spans
+            .iter()
+            .any(|span| span.style.fg == Some(theme.favorite))
+    };
+    // (status, idle flag the watch was seeded under, violet). The seeds stay in place, so
+    // the unseeded case runs first.
+    for (status, seeded, violet) in [
+        (Status::Idle, None, false),
+        (Status::Idle, Some(true), true),
+        (Status::Running, Some(false), true),
+        // The agent resumed after the check: it stays green until the next check.
+        (Status::Running, Some(true), false),
+        (Status::Idle, Some(false), false),
+    ] {
+        env.view.instances.get_mut(&id).unwrap().status = status;
+        if let Some(idle) = seeded {
+            env.view.background.seed_for_test(&id, idle);
+        }
+        assert_eq!(spins(&env.view), violet, "{status:?} seeded {seeded:?}");
+    }
+}
+
 fn worktree_instance(title: &str) -> Instance {
     let mut inst = Instance::new(title, "/tmp/a");
     inst.worktree_info = Some(crate::session::WorktreeInfo {

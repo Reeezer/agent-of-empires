@@ -722,12 +722,16 @@ pub(super) fn foreground_arguments(shell_pid: u32) -> Vec<super::ProcessArgument
         .collect()
 }
 
-pub(super) fn parent_and_argv0(pid: u32) -> Option<(u32, String)> {
+pub(super) fn parent_and_argv(pid: u32) -> Option<(u32, Vec<String>)> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let ppid = u32::try_from(parse_stat_field(&stat, 3)?).ok()?;
     let cmdline = fs::read(format!("/proc/{pid}/cmdline")).ok()?;
-    let argv0 = cmdline.split(|byte| *byte == 0).next().unwrap_or_default();
-    Some((ppid, String::from_utf8_lossy(argv0).into_owned()))
+    let argv = cmdline
+        .split(|byte| *byte == 0)
+        .take(2)
+        .map(|word| String::from_utf8_lossy(word).into_owned())
+        .collect();
+    Some((ppid, argv))
 }
 
 /// `comm` (field 2) may contain spaces.

@@ -2963,7 +2963,7 @@ impl Instance {
         self.active_execution = src.active_execution.clone();
     }
 
-    pub(super) fn capture_store_dir(&self) -> Option<PathBuf> {
+    pub(crate) fn capture_store_dir(&self) -> Option<PathBuf> {
         if let Some(active) = self.active_execution.as_ref() {
             return match &active.capture {
                 Some(super::CaptureContext::Store { root, .. }) => Some(root.clone()),

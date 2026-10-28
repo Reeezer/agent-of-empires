@@ -483,6 +483,41 @@ fn collect_descendants_from_map(
     }
 }
 
+/// Command lines of every descendant of each root pid, from a single `ps` listing.
+pub fn descendant_command_lines(roots: &[u32]) -> HashMap<u32, Vec<String>> {
+    let Ok(output) = Command::new("ps")
+        .args(["-axo", "pid=,ppid=,args="])
+        .output()
+    else {
+        return HashMap::new();
+    };
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    let mut command_lines: HashMap<u32, String> = HashMap::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let mut fields = line.split_whitespace();
+        let (Some(pid), Some(ppid)) = (
+            fields.next().and_then(|field| field.parse::<u32>().ok()),
+            fields.next().and_then(|field| field.parse::<u32>().ok()),
+        ) else {
+            continue;
+        };
+        children.entry(ppid).or_default().push(pid);
+        command_lines.insert(pid, fields.collect::<Vec<_>>().join(" "));
+    }
+    roots
+        .iter()
+        .map(|&root| {
+            let mut pids = Vec::new();
+            collect_descendants_from_map(root, &children, &mut pids);
+            let lines = pids
+                .iter()
+                .filter_map(|pid| command_lines.get(pid).cloned())
+                .collect();
+            (root, lines)
+        })
+        .collect()
+}
+
 pub fn get_pane_pid(session_name: &str) -> Option<u32> {
     // `^.0` targets the agent pane regardless of base-index or extra windows and splits.
     let target = format!("{session_name}:^.0");
@@ -1040,15 +1075,16 @@ pub(crate) fn foreground_arguments(shell_pid: u32) -> Vec<ProcessArguments> {
     }
 }
 
-pub fn parent_and_argv0(pid: u32) -> Option<(u32, String)> {
+/// The parent pid and the process's first two arguments (program, then its first argument).
+pub fn parent_and_argv(pid: u32) -> Option<(u32, Vec<String>)> {
     #[cfg(target_os = "linux")]
     {
-        linux::parent_and_argv0(pid)
+        linux::parent_and_argv(pid)
     }
 
     #[cfg(target_os = "macos")]
     {
-        macos::parent_and_argv0(pid)
+        macos::parent_and_argv(pid)
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -1417,7 +1453,7 @@ mod tests {
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
-    fn parent_and_argv0_reads_a_live_child() {
+    fn parent_and_argv_reads_a_live_child() {
         let mut child = Command::new("sleep")
             .arg("30")
             .stdin(Stdio::null())
@@ -1427,8 +1463,10 @@ mod tests {
             .unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         let read = loop {
-            let read = parent_and_argv0(child.id());
-            if read.as_ref().is_some_and(|(_, argv0)| argv0 == "sleep")
+            let read = parent_and_argv(child.id());
+            if read
+                .as_ref()
+                .is_some_and(|(_, argv)| argv.first().is_some_and(|argv0| argv0 == "sleep"))
                 || Instant::now() >= deadline
             {
                 break read;
@@ -1437,7 +1475,39 @@ mod tests {
         };
         let _ = child.kill();
         let _ = child.wait();
-        assert_eq!(read, Some((std::process::id(), "sleep".to_string())));
+        assert_eq!(
+            read,
+            Some((
+                std::process::id(),
+                vec!["sleep".to_string(), "30".to_string()]
+            ))
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn descendant_command_lines_lists_a_live_child() {
+        let mut child = Command::new("sleep")
+            .arg("31")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let root = std::process::id();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let lines = loop {
+            let lines = descendant_command_lines(&[root])
+                .remove(&root)
+                .unwrap_or_default();
+            if lines.iter().any(|line| line == "sleep 31") || Instant::now() >= deadline {
+                break lines;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(lines.iter().any(|line| line == "sleep 31"), "{lines:?}");
     }
 
     #[cfg(target_os = "linux")]

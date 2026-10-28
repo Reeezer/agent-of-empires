@@ -2,6 +2,31 @@
 
 > `CLAUDE.md` links to this file. Edit `AGENTS.md` only.
 
+## Mac fork maintenance
+
+This public fork ships the terminal dashboard for Apple Silicon and Intel Macs.
+Keep it free of company-specific instructions, credentials, local paths and data.
+
+When asked to update AoE, read the latest stable release from
+`gh api repos/agent-of-empires/agent-of-empires/releases/latest --jq .tag_name`,
+fetch that tag and merge it. Preserve the session cost/context display,
+background work indicators, session-ID capture fixes, this README, the Mac
+installer and release workflow, and the updater URLs pointing to this fork.
+Resolve conflicts rather than discarding either upstream fixes or fork behavior.
+Keep the update cache separate from the official build's cache.
+
+Set the root package version in `Cargo.toml` and `Cargo.lock` to the upstream
+version plus `-mac.1`, incrementing the final number for another fork release
+on the same upstream version. Run `python3 scripts/test-macos-install.py`,
+`cargo fmt --all --check`, `cargo clippy --locked -- -D warnings` and
+`cargo test --locked`. Verify the dashboard with isolated sample data.
+
+When publication is requested, commit with a GitHub noreply email, push to
+this fork's `main`, and run `gh workflow run macos-release.yml --repo
+Reeezer/agent-of-empires --ref main`. Watch the run, then test the published
+installer in a temporary `INSTALL_DIR` before handing back the release link.
+Never publish session data or local development notes.
+
 ## Where to look
 
 - `src/process/`: OS process handling plus reusable worker supervision.

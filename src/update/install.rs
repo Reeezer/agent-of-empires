@@ -134,8 +134,7 @@ pub fn current_platform_string() -> Result<&'static str> {
     platform_string_for(std::env::consts::OS, std::env::consts::ARCH)
 }
 
-const DEFAULT_RELEASE_BASE: &str =
-    "https://github.com/agent-of-empires/agent-of-empires/releases/download";
+const DEFAULT_RELEASE_BASE: &str = "https://github.com/Reeezer/agent-of-empires/releases/download";
 
 fn release_tarball_url(version: &str, platform: &str) -> String {
     let base =
@@ -471,7 +470,7 @@ fn update_via_brew(target_version: &str) -> Result<()> {
 
 fn nix_refusal_message() -> String {
     "aoe was installed via Nix. Update by running:\n\
-     \n    nix run github:agent-of-empires/agent-of-empires\n\
+     \n    nix run github:Reeezer/agent-of-empires\n\
      \n(or rebuild your flake input)."
         .to_string()
 }
@@ -482,7 +481,7 @@ fn print_nix_refusal() {
 
 fn cargo_refusal_message() -> String {
     "aoe was installed via cargo. Update by running:\n\
-     \n    cargo install --git https://github.com/agent-of-empires/agent-of-empires aoe\n\
+     \n    cargo install --git https://github.com/Reeezer/agent-of-empires agent-of-empires\n\
      \n(or `git pull && cargo install --path .` from a local clone)."
         .to_string()
 }
@@ -495,7 +494,7 @@ fn unknown_refusal_message(binary_path: &Path) -> String {
     format!(
         "Couldn't determine how aoe was installed at {}.\n\
          Reinstall with:\n\
-         \n    curl -fsSL https://raw.githubusercontent.com/agent-of-empires/agent-of-empires/main/scripts/install.sh | bash\n",
+         \n    curl -fsSL https://raw.githubusercontent.com/Reeezer/agent-of-empires/main/scripts/install.sh | bash\n",
         binary_path.display()
     )
 }
@@ -750,7 +749,7 @@ mod tests {
         for (base, expected) in [
             (
                 None,
-                "https://github.com/agent-of-empires/agent-of-empires/releases/download/v0.5.0/aoe-linux-amd64.tar.gz",
+                "https://github.com/Reeezer/agent-of-empires/releases/download/v0.5.0/aoe-linux-amd64.tar.gz",
             ),
             (
                 Some("http://127.0.0.1:9999/releases"),

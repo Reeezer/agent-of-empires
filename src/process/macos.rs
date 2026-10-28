@@ -909,7 +909,7 @@ pub(super) fn foreground_arguments(shell_pid: u32) -> Vec<super::ProcessArgument
         .collect()
 }
 
-pub(super) fn parent_and_argv0(pid: u32) -> Option<(u32, String)> {
+pub(super) fn parent_and_argv(pid: u32) -> Option<(u32, Vec<String>)> {
     let output = Command::new("ps")
         .args(["-o", "ppid=,args=", "-p", &pid.to_string()])
         .output()
@@ -920,7 +920,7 @@ pub(super) fn parent_and_argv0(pid: u32) -> Option<(u32, String)> {
     let text = String::from_utf8_lossy(&output.stdout);
     let mut fields = text.split_whitespace();
     let ppid = fields.next()?.parse().ok()?;
-    Some((ppid, fields.next().unwrap_or_default().to_string()))
+    Some((ppid, fields.take(2).map(str::to_string).collect()))
 }
 
 pub fn get_foreground_pid(shell_pid: u32) -> Option<u32> {

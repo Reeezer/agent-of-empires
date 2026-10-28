@@ -1,5 +1,6 @@
 //! Home view - main session list and navigation
 
+mod background;
 pub(crate) mod bindings;
 mod config_refresh;
 mod creation;
@@ -30,6 +31,7 @@ mod status;
 mod store_move;
 #[cfg(test)]
 mod tests;
+mod usage;
 mod user_action;
 mod watchers;
 
@@ -138,6 +140,8 @@ struct RecoveryUpdate {
 }
 
 pub struct HomeView {
+    usage: usage::UsagePoller,
+    background: background::BackgroundPoller,
     pub(super) storages: HashMap<String, Storage>,
     pub(super) active_profile: Option<String>,
     instances: indexmap::IndexMap<String, Instance>,

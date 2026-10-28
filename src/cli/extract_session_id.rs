@@ -93,9 +93,13 @@ fn fired_by_pane_agent() -> bool {
         std::os::unix::process::parent_id(),
         agent_pid,
         &names,
-        crate::process::parent_and_argv0,
+        crate::process::parent_and_argv,
     )
 }
+
+/// Claude moves a session into its own helper processes (`claude daemon run`, `bg-pty-host`,
+/// `bg-spare`) between the hook and the pane's `claude`; they belong to the agent, not nested copies.
+const AGENT_HELPERS: &[&str] = &["daemon", "bg-pty-host", "bg-spare"];
 
 /// Whether the walk from the hook up to the launched agent meets at most one process named like
 /// the agent, i.e. the hook was fired by the pane's own agent rather than a nested copy.
@@ -103,19 +107,23 @@ fn walk_reaches_single_agent(
     start: u32,
     agent_pid: u32,
     agent_names: &[&str],
-    parent_and_argv0: impl Fn(u32) -> Option<(u32, String)>,
+    parent_and_argv: impl Fn(u32) -> Option<(u32, Vec<String>)>,
 ) -> bool {
     let mut pid = start;
     let mut agents = 0;
     for hop in 0..MAX_ANCESTORS {
-        let Some((ppid, argv0)) = parent_and_argv0(pid) else {
+        let Some((ppid, argv)) = parent_and_argv(pid) else {
             return hop == 0;
         };
-        if std::path::Path::new(&argv0)
-            .file_name()
+        let is_agent = argv
+            .first()
+            .and_then(|argv0| std::path::Path::new(argv0).file_name())
             .and_then(|name| name.to_str())
-            .is_some_and(|name| agent_names.contains(&name))
-        {
+            .is_some_and(|name| agent_names.contains(&name));
+        let is_helper = argv
+            .get(1)
+            .is_some_and(|arg| AGENT_HELPERS.contains(&arg.as_str()));
+        if is_agent && !is_helper {
             agents += 1;
         }
         if pid == agent_pid {
@@ -421,7 +429,7 @@ mod tests {
     #[test]
     fn only_the_pane_agent_owns_the_hook() {
         type Chain = &'static [(u32, u32, &'static str)];
-        let cases: [(&str, u32, Chain, bool); 7] = [
+        let cases: [(&str, u32, Chain, bool); 9] = [
             ("direct launch", 9, &[(10, 9, "sh"), (9, 1, "claude")], true),
             (
                 "wrapper runs the agent as a child",
@@ -453,6 +461,30 @@ mod tests {
                 false,
             ),
             (
+                "session hosted by the agent's helper processes",
+                6,
+                &[
+                    (10, 9, "sh"),
+                    (9, 8, "claude bg-spare"),
+                    (8, 7, "claude bg-pty-host"),
+                    (7, 6, "claude daemon"),
+                    (6, 1, "/opt/bin/claude"),
+                ],
+                true,
+            ),
+            (
+                "nested agent under the helper processes",
+                6,
+                &[
+                    (10, 9, "sh"),
+                    (9, 8, "claude"),
+                    (8, 7, "claude bg-spare"),
+                    (7, 6, "claude daemon"),
+                    (6, 1, "/opt/bin/claude"),
+                ],
+                false,
+            ),
+            (
                 "detached from the launched pid",
                 7,
                 &[(10, 9, "sh"), (9, 1, "claude"), (1, 0, "init")],
@@ -462,9 +494,14 @@ mod tests {
             ("process table unavailable", 7, &[], true),
         ];
         for (name, agent_pid, chain, owned) in cases {
-            let table: std::collections::HashMap<u32, (u32, String)> = chain
+            let table: std::collections::HashMap<u32, (u32, Vec<String>)> = chain
                 .iter()
-                .map(|(pid, ppid, argv0)| (*pid, (*ppid, argv0.to_string())))
+                .map(|(pid, ppid, argv)| {
+                    (
+                        *pid,
+                        (*ppid, argv.split_whitespace().map(String::from).collect()),
+                    )
+                })
                 .collect();
             let lookup = |pid| table.get(&pid).cloned();
             assert_eq!(
@@ -523,9 +560,14 @@ mod tests {
             ),
         ];
         for (name, names, agent_pid, chain, owned) in cases {
-            let table: std::collections::HashMap<u32, (u32, String)> = chain
+            let table: std::collections::HashMap<u32, (u32, Vec<String>)> = chain
                 .iter()
-                .map(|(pid, ppid, argv0)| (*pid, (*ppid, argv0.to_string())))
+                .map(|(pid, ppid, argv)| {
+                    (
+                        *pid,
+                        (*ppid, argv.split_whitespace().map(String::from).collect()),
+                    )
+                })
                 .collect();
             let lookup = |pid| table.get(&pid).cloned();
             assert_eq!(
