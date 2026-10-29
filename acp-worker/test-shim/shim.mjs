@@ -8,6 +8,7 @@
 import * as acp from "@agentclientprotocol/sdk";
 import net from "node:net";
 import { appendFile, access, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { Duplex, Readable, Writable } from "node:stream";
 
 // One shim process serves one ACP connection, so module state is per connection.
@@ -304,6 +305,9 @@ async function handlePrompt(params, client) {
     client.notify("session/update", { sessionId: params.sessionId, update });
   const chunk = (text) =>
     notify({ sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
+  // Reported paths live in the session's working directory, not a shared temp dir.
+  const shimFilePath = join(process.cwd(), "shim.txt");
+  const shimConfigPath = join(process.cwd(), "shim-config.json");
 
   // Checked in this order, as the scenarios' keywords are distinct.
   for (const keyword of ["COST_THEN_SILENCE", "SILENCE_NO_COST", "ASYNC_AGENT_ORPHAN"]) {
@@ -365,8 +369,8 @@ async function handlePrompt(params, client) {
     title: "Reading shim file",
     kind: "read",
     status: "pending",
-    locations: [{ path: "/tmp/shim.txt" }],
-    rawInput: { path: "/tmp/shim.txt" },
+    locations: [{ path: shimFilePath }],
+    rawInput: { path: shimFilePath },
   });
   await pause();
 
@@ -437,8 +441,8 @@ async function handlePrompt(params, client) {
         title: "Modify shim config",
         kind: "edit",
         status: "pending",
-        locations: [{ path: "/tmp/shim-config.json" }],
-        rawInput: { path: "/tmp/shim-config.json", content: '{"x":1}' },
+        locations: [{ path: shimConfigPath }],
+        rawInput: { path: shimConfigPath, content: '{"x":1}' },
       },
       [
         { kind: "allow_once", name: "Allow once", optionId: "yes" },

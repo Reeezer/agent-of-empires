@@ -2,6 +2,7 @@
 """Update toolchain.channel without rewriting unrelated TOML."""
 
 import argparse
+import re
 import tomllib
 from pathlib import Path
 
@@ -74,7 +75,12 @@ def main():
         return
     if args.latest is None:
         parser.error("latest is required")
-    path = Path("rust-toolchain.toml")
+    if not re.fullmatch(r"\d+\.\d+\.\d+", args.latest):
+        parser.error(f"invalid toolchain version: {args.latest!r}")
+    root = Path.cwd().resolve()
+    path = (root / "rust-toolchain.toml").resolve()
+    if not path.is_relative_to(root):
+        raise ValueError(f"toolchain file escapes working directory: {path}")
     original = path.read_bytes().decode("utf-8")
     updated = update_channel(original, args.latest)
     if updated != original:
