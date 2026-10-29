@@ -124,7 +124,7 @@ def main():
 
     if args.self_test:
         self_test()
-        return 0
+        return
 
     if not args.build_step:
         parser.error("missing required argument: --build-step")
@@ -137,8 +137,7 @@ def main():
 
     print(f"kind={kind}")
     print(f"alert={'true' if should_alert(kind, args.previous_conclusion) else 'false'}")
-    return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
