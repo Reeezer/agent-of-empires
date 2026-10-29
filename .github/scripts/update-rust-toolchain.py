@@ -2,11 +2,15 @@
 """Update toolchain.channel without rewriting unrelated TOML."""
 
 import argparse
+import re
 import tomllib
 from pathlib import Path
 
 import tomlkit
 from tomlkit.items import String
+
+TOOLCHAIN_FILE = "rust-toolchain.toml"
+CHANNEL_RE = re.compile(r"[0-9A-Za-z][0-9A-Za-z.\-]*")
 
 
 def update_channel(text, latest):
@@ -74,11 +78,16 @@ def main():
         return
     if args.latest is None:
         parser.error("latest is required")
-    path = Path("rust-toolchain.toml")
+    if not CHANNEL_RE.fullmatch(args.latest):
+        parser.error(f"invalid toolchain channel: {args.latest!r}")
+    path = (Path.cwd() / TOOLCHAIN_FILE).resolve()
+    if path.parent != Path.cwd().resolve():
+        raise ValueError(f"unexpected toolchain path: {path}")
     original = path.read_bytes().decode("utf-8")
     updated = update_channel(original, args.latest)
     if updated != original:
-        path.write_bytes(updated.encode("utf-8"))
+        with open(path, "wb") as f:
+            f.write(updated.encode("utf-8"))
 
 
 if __name__ == "__main__":
