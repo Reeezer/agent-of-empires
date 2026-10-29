@@ -359,14 +359,15 @@ async function handlePrompt(params, client) {
     await notify(usage(120, userText.includes("USAGE_BEFORE_COST")));
   }
 
+  const shimFile = process.cwd() + "/shim.txt";
   await notify({
     sessionUpdate: "tool_call",
     toolCallId: "tc-1",
     title: "Reading shim file",
     kind: "read",
     status: "pending",
-    locations: [{ path: "/tmp/shim.txt" }],
-    rawInput: { path: "/tmp/shim.txt" },
+    locations: [{ path: shimFile }],
+    rawInput: { path: shimFile },
   });
   await pause();
 
@@ -431,14 +432,15 @@ async function handlePrompt(params, client) {
   };
 
   if (userText.includes("REQUEST_PERMISSION")) {
+    const configFile = process.cwd() + "/shim-config.json";
     const verdict = await askPermission(
       {
         toolCallId: "tc-2",
         title: "Modify shim config",
         kind: "edit",
         status: "pending",
-        locations: [{ path: "/tmp/shim-config.json" }],
-        rawInput: { path: "/tmp/shim-config.json", content: '{"x":1}' },
+        locations: [{ path: configFile }],
+        rawInput: { path: configFile, content: '{"x":1}' },
       },
       [
         { kind: "allow_once", name: "Allow once", optionId: "yes" },
