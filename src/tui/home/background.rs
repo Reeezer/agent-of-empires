@@ -1,6 +1,7 @@
-//! Claude sessions that stopped to wait on something they started, so the row is not read as waiting on the user.
+//! Sessions that stopped to wait on something they started, so the row is not read as waiting on the user.
 //!
-//! An idle session waits when its shell tool still has a command running. A session aoe shows as
+//! An idle Claude session waits when its shell tool still has a command running, and an idle Codex
+//! session when it lists background terminals above its prompt. A Claude session aoe shows as
 //! running waits when the status line above the prompt reports an armed monitor; while the agent
 //! works, that line is its own spinner instead, so a working agent stays green.
 
@@ -17,8 +18,8 @@ const BASH_TOOL_MARKER: &str = "/shell-snapshots/";
 const MONITOR_RULE: &str = "background_monitor";
 const CAPTURE_LINES: u32 = 50;
 
-/// Instance id, tmux session name and whether the row was idle when asked.
-type Requests = Vec<(String, String, bool)>;
+/// Instance id, tmux session name, tool and whether the row was idle when asked.
+type Requests = Vec<(String, String, String, bool)>;
 
 pub(super) struct BackgroundPoller {
     worker: Worker<Requests, HashMap<String, bool>>,
@@ -52,14 +53,16 @@ impl BackgroundPoller {
             return;
         }
         let requests: Requests = instances
-            .filter(|instance| {
-                instance.tool == "claude"
-                    && matches!(instance.status, Status::Idle | Status::Running)
+            .filter(|instance| match instance.tool.as_str() {
+                "claude" => matches!(instance.status, Status::Idle | Status::Running),
+                "codex" => matches!(instance.status, Status::Idle),
+                _ => false,
             })
             .map(|instance| {
                 (
                     instance.id.clone(),
                     crate::tmux::Session::generate_name(&instance.id, &instance.title),
+                    instance.tool.clone(),
                     matches!(instance.status, Status::Idle),
                 )
             })
@@ -94,35 +97,60 @@ fn screen_arms_monitor(screen: &str) -> bool {
         .is_some_and(|detection| detection.rule == MONITOR_RULE)
 }
 
-fn monitor_armed(session: &str) -> bool {
+/// Codex draws this row above its prompt only after the turn ends: while it works, the summary sits in the working line.
+fn codex_terminal_running(screen: &str) -> bool {
+    let mut above_prompt = screen
+        .lines()
+        .rev()
+        .filter(|line| !line.trim().is_empty())
+        .skip_while(|line| !line.trim_start().starts_with('\u{203A}'))
+        .skip(1);
+    above_prompt.next().is_some_and(|line| {
+        line.trim_start()
+            .split_once(' ')
+            .is_some_and(|(count, rest)| {
+                count.parse::<u32>().is_ok_and(|count| count > 0)
+                    && rest.starts_with("background terminal")
+            })
+    })
+}
+
+fn capture(session: &str) -> String {
     crate::tmux::tmux_command()
         .args(["capture-pane", "-p", "-t", &format!("{session}:^.0")])
         .args(["-S", &format!("-{CAPTURE_LINES}")])
         .output()
-        .is_ok_and(|output| screen_arms_monitor(&String::from_utf8_lossy(&output.stdout)))
+        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+        .unwrap_or_default()
 }
 
 fn collect(requests: Requests) -> HashMap<String, bool> {
     let panes: Vec<_> = requests
         .iter()
-        .filter_map(|(id, session, idle)| {
-            Some((id, session, *idle, crate::process::get_pane_pid(session)?))
+        .filter_map(|(id, session, tool, idle)| {
+            Some((
+                id,
+                session,
+                tool,
+                *idle,
+                crate::process::get_pane_pid(session)?,
+            ))
         })
         .collect();
     let roots: Vec<u32> = panes.iter().map(|(.., pid)| *pid).collect();
     let trees = crate::process::descendant_command_lines(&roots);
     panes
         .into_iter()
-        .filter(|(_, session, idle, pid)| {
-            if *idle {
-                trees
+        .filter(
+            |(_, session, tool, idle, pid)| match (tool.as_str(), idle) {
+                ("codex", _) => codex_terminal_running(&capture(session)),
+                (_, true) => trees
                     .get(pid)
-                    .is_some_and(|lines| runs_bash_tool_command(lines))
-            } else {
-                monitor_armed(session)
-            }
-        })
-        .map(|(id, _, idle, _)| (id.clone(), idle))
+                    .is_some_and(|lines| runs_bash_tool_command(lines)),
+                _ => screen_arms_monitor(&capture(session)),
+            },
+        )
+        .map(|(id, _, _, idle, _)| (id.clone(), idle))
         .collect()
 }
 
@@ -141,6 +169,31 @@ mod tests {
             (vec![mcp, hook, command], true),
         ] {
             assert_eq!(runs_bash_tool_command(&lines), running, "{lines:?}");
+        }
+    }
+
+    #[test]
+    fn codex_waits_on_terminals_listed_above_its_prompt() {
+        let prompt = "\u{203A} Ask Codex to do anything\n\n  GPT-6.1-Sol xhigh \u{b7} ~/project \u{b7} Main [default]\n  ? for shortcuts";
+        for (name, screen, waiting) in [
+            (
+                "stopped with terminals running",
+                format!("\u{2022} Done.\n\n  2 background terminals running \u{b7} /ps to view \u{b7} /stop to close\n\n{prompt}"),
+                true,
+            ),
+            (
+                "working with terminals running",
+                format!("\u{2022} Working (34m 29s \u{2022} esc to interrupt) \u{b7} 1 background terminal running \u{b7} /ps to view \u{b7} /stop to close\n  \u{2514} Tip: Use /permissions.\n\n{prompt}"),
+                false,
+            ),
+            (
+                "stopped after quoting the row",
+                format!("  1 background terminal running \u{b7} /ps to view\n\u{2022} That row means a command is still running.\n\n{prompt}"),
+                false,
+            ),
+            ("no prompt", "  1 background terminal running".to_string(), false),
+        ] {
+            assert_eq!(codex_terminal_running(&screen), waiting, "{name}");
         }
     }
 

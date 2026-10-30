@@ -11,7 +11,7 @@ A small personal fork of [Agent of Empires](https://github.com/agent-of-empires/
 
 - Keep your Claude Code and Codex sessions in one terminal dashboard.
 - See estimated API costs and context usage beside each session.
-- Tell when Claude is waiting on a background command or monitor.
+- Tell when Claude or Codex is waiting on background work.
 - Switch between projects and branches. Sessions keep running when you close the dashboard.
 
 ## 📦 Installation
@@ -37,7 +37,7 @@ For a new official AoE release, ask Claude Code or Codex in this repository: "Up
 - Press `n` to create a session, choose Claude Code or Codex, and select your project.
 - Press `Enter` to open a session and `Ctrl+b d` to return to the dashboard.
 - Read `$4.32 46%` as the session's estimated API cost and context usage. Costs refresh every 15 seconds; `?` means unavailable.
-- A spinning icon in the favorite color means Claude is waiting on background work. A working agent stays green.
+- A spinning icon in the favorite color means the agent stopped to wait on background work. A working agent stays green.
 - Press `?` for all shortcuts.
 
 Cost estimates are equivalent API spend, including for subscription accounts. Context percentages are estimates based on the model and the latest reply.
