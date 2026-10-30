@@ -80,4 +80,4 @@ jobs:
           tag="v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
           gh release create "$tag" dist/* --target "$GITHUB_SHA" \
             --title "AoE for Mac $tag" --latest \
-            --notes 'Personal Mac fork with session cost estimates, Claude context usage, and background work indicators. Supports Apple Silicon and Intel. See the README for installation.'
+            --notes 'Personal Mac fork with session cost estimates, context usage, and background work indicators. Supports Apple Silicon and Intel. See the README for installation.'

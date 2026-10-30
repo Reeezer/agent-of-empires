@@ -253,20 +253,24 @@ struct TokenUsage {
     cache_read_input_tokens: u64,
 }
 
-/// Share of the model's window that the conversation's latest main-thread reply read, in percent.
-fn context_percent(store: &Path, native_id: &str) -> Option<u64> {
-    let transcript = std::fs::read_dir(store.join("projects"))
-        .ok()?
-        .filter_map(Result::ok)
-        .map(|project| project.path().join(format!("{native_id}.jsonl")))
-        .find(|path| path.is_file())?;
-    let mut file = File::open(transcript).ok()?;
+fn transcript_tail(path: &Path) -> Option<String> {
+    let mut file = File::open(path).ok()?;
     let len = file.metadata().ok()?.len();
     file.seek(SeekFrom::Start(len.saturating_sub(TRANSCRIPT_TAIL_BYTES)))
         .ok()?;
     let mut tail = Vec::new();
     file.read_to_end(&mut tail).ok()?;
-    let (model, tokens) = String::from_utf8_lossy(&tail)
+    Some(String::from_utf8_lossy(&tail).into_owned())
+}
+
+/// Share of the model's window that the conversation's latest main-thread reply read, in percent.
+fn claude_context_percent(store: &Path, native_id: &str) -> Option<u64> {
+    let transcript = std::fs::read_dir(store.join("projects"))
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|project| project.path().join(format!("{native_id}.jsonl")))
+        .find(|path| path.is_file())?;
+    let (model, tokens) = transcript_tail(&transcript)?
         .lines()
         .rev()
         .find_map(|line| {
@@ -279,6 +283,37 @@ fn context_percent(store: &Path, native_id: &str) -> Option<u64> {
             (tokens > 0).then(|| (message.model.unwrap_or_default(), tokens))
         })?;
     let window = context_window(&model);
+    Some((tokens * 100 + window / 2) / window)
+}
+
+/// Share of the window that Codex last reported the conversation's latest reply read, in percent.
+fn codex_context_percent(store: &Path, native_id: &str) -> Option<u64> {
+    let suffix = format!("-{native_id}.jsonl");
+    let mut paths = vec![store.join("sessions")];
+    // Rollouts live in sessions/YYYY/MM/DD/.
+    for _ in 0..4 {
+        paths = paths
+            .iter()
+            .filter_map(|path| std::fs::read_dir(path).ok())
+            .flatten()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .collect();
+    }
+    let rollout = paths.into_iter().find(|path| {
+        path.is_file()
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(&suffix))
+    })?;
+    let (tokens, window) = transcript_tail(&rollout)?.lines().rev().find_map(|line| {
+        let line: serde_json::Value = serde_json::from_str(line).ok()?;
+        let info = line.pointer("/payload/info")?;
+        let tokens = info.pointer("/last_token_usage/input_tokens")?.as_u64()?;
+        let window = info.get("model_context_window")?.as_u64()?;
+        (window > 0).then_some((tokens, window))
+    })?;
     Some((tokens * 100 + window / 2) / window)
 }
 
@@ -327,9 +362,11 @@ fn collect_with(
                 .iter()
                 .find(|entry| entry.agent == agent && entry.native_id() == Some(&request.native_id))
                 .and_then(Entry::cost);
-            let context = (agent == "claude")
-                .then(|| context_percent(&store, &request.native_id))
-                .flatten();
+            let context = match agent.as_str() {
+                "claude" => claude_context_percent(&store, &request.native_id),
+                "codex" => codex_context_percent(&store, &request.native_id),
+                _ => None,
+            };
             snapshots.insert(request.id.clone(), (request, cost, context));
         }
     }
@@ -456,8 +493,11 @@ mod tests {
             r#"{"type":"user","message":{"role":"user","content":"hi"}}"#.into(),
         ];
         std::fs::write(project.join(format!("{SID}.jsonl")), lines.join("\n")).unwrap();
-        assert_eq!(context_percent(root.path(), SID), Some(46));
-        assert_eq!(context_percent(root.path(), "other-conversation"), None);
+        assert_eq!(claude_context_percent(root.path(), SID), Some(46));
+        assert_eq!(
+            claude_context_percent(root.path(), "other-conversation"),
+            None
+        );
 
         let instance = instance(root.path(), "claude");
         let mut poller = UsagePoller::new();
@@ -468,6 +508,45 @@ mod tests {
         });
         assert_eq!(poller.label(&instance, 80).unwrap(), "$4.32 46%");
         assert_eq!(poller.label(&instance, 8).unwrap(), "$4.32");
+    }
+
+    #[test]
+    fn codex_context_follows_the_latest_reported_window() {
+        let root = tempfile::tempdir().unwrap();
+        let day = root.path().join("sessions/2026/10/22");
+        std::fs::create_dir_all(&day).unwrap();
+        let tokens = |input: u64, window: u64| {
+            serde_json::json!({"type": "event_msg", "payload": {"type": "token_count", "info": {
+                "last_token_usage": {"input_tokens": input, "cached_input_tokens": input - 1},
+                "model_context_window": window
+            }}})
+            .to_string()
+        };
+        let lines = [
+            tokens(900_000, 1_000_000),
+            tokens(223_329, 828_400),
+            r#"{"type":"event_msg","payload":{"type":"token_count","info":null}}"#.into(),
+            r#"{"type":"response_item","payload":{"type":"message","role":"assistant"}}"#.into(),
+        ];
+        std::fs::write(
+            day.join(format!("rollout-2026-10-22T09-00-00-{SID}.jsonl")),
+            lines.join("\n"),
+        )
+        .unwrap();
+        assert_eq!(codex_context_percent(root.path(), SID), Some(27));
+        assert_eq!(
+            codex_context_percent(root.path(), "other-conversation"),
+            None
+        );
+
+        let instance = instance(root.path(), "codex");
+        let mut poller = UsagePoller::new();
+        poller.snapshots = collect_with(vec![Request::for_instance(&instance).unwrap()], |_, _| {
+            Ok(Report {
+                session: vec![entry("codex")],
+            })
+        });
+        assert_eq!(poller.label(&instance, 80).unwrap(), "$4.32 27%");
     }
 
     #[test]
