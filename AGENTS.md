@@ -22,6 +22,9 @@ on the same upstream version. Run `python3 scripts/test-macos-install.py`,
 `cargo nextest run --locked --no-fail-fast` and `cargo test --locked --doc`.
 Use the same per-test process isolation as upstream CI. Verify the dashboard with isolated sample data.
 
+Validate a change locally before building it for GitHub: show it in a local
+`dev-release` build, wait for the owner's go-ahead, then publish.
+
 When publication is requested, commit with a GitHub noreply email, push to
 this fork's `main`, and run `gh workflow run macos-release.yml --repo
 Reeezer/agent-of-empires --ref main`. Watch the run, then test the published
