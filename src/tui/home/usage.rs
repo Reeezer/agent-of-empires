@@ -85,7 +85,13 @@ impl Request {
     }
 }
 
-type Snapshots = HashMap<String, (Request, Option<f64>, Option<u64>)>;
+#[derive(Default)]
+struct Context {
+    percent: Option<u64>,
+    model: Option<String>,
+}
+
+type Snapshots = HashMap<String, (Request, Option<f64>, Context)>;
 
 pub(super) struct UsagePoller {
     worker: Worker<Vec<Request>, Snapshots>,
@@ -129,17 +135,24 @@ impl UsagePoller {
 
     pub(super) fn label(&self, instance: &Instance, width: usize) -> Option<String> {
         let request = Request::for_instance(instance)?;
-        let (cost, context) = self
+        let snapshot = self
             .snapshots
             .get(&instance.id)
-            .filter(|(original, ..)| &request == original)
-            .map_or((None, None), |(_, cost, context)| (*cost, *context));
+            .filter(|(original, ..)| &request == original);
+        let cost = snapshot.and_then(|(_, cost, _)| *cost);
+        let percent = snapshot.and_then(|(.., context)| context.percent);
+        let tag = snapshot
+            .and_then(|(.., context)| model_tag(&request.agent, context.model.as_deref()?))
+            .map(|tag| format!(" {tag}"))
+            .filter(|tag| rendered_width(tag) < width)
+            .unwrap_or_default();
+        let width = width - rendered_width(&tag);
         let cost = cost.map_or_else(|| "cost ?".into(), |cost| format!("${cost:.2}"));
-        let with_context = context.map(|percent| format!("{cost} {percent}%"));
+        let with_context = percent.map(|percent| format!("{cost} {percent}%"));
         let label = with_context
             .filter(|label| rendered_width(label) <= width)
             .unwrap_or(cost);
-        Some(truncate_to_width(&label, width))
+        Some(truncate_to_width(&label, width) + &tag)
     }
 
     #[cfg(test)]
@@ -149,7 +162,10 @@ impl UsagePoller {
             (
                 Request::for_instance(instance).unwrap(),
                 Some(cost),
-                context,
+                Context {
+                    percent: context,
+                    model: None,
+                },
             ),
         );
     }
@@ -263,8 +279,8 @@ fn transcript_tail(path: &Path) -> Option<String> {
     Some(String::from_utf8_lossy(&tail).into_owned())
 }
 
-/// Share of the model's window that the conversation's latest main-thread reply read, in percent.
-fn claude_context_percent(store: &Path, native_id: &str) -> Option<u64> {
+/// The latest main-thread reply's model and the share of its window that reply read, in percent.
+fn claude_context(store: &Path, native_id: &str) -> Option<Context> {
     let transcript = std::fs::read_dir(store.join("projects"))
         .ok()?
         .filter_map(Result::ok)
@@ -280,14 +296,17 @@ fn claude_context_percent(store: &Path, native_id: &str) -> Option<u64> {
             let tokens = usage.input_tokens
                 + usage.cache_creation_input_tokens
                 + usage.cache_read_input_tokens;
-            (tokens > 0).then(|| (message.model.unwrap_or_default(), tokens))
+            (tokens > 0).then_some((message.model, tokens))
         })?;
-    let window = context_window(&model);
-    Some((tokens * 100 + window / 2) / window)
+    let window = context_window(model.as_deref().unwrap_or_default());
+    Some(Context {
+        percent: Some((tokens * 100 + window / 2) / window),
+        model,
+    })
 }
 
-/// Share of the window that Codex last reported the conversation's latest reply read, in percent.
-fn codex_context_percent(store: &Path, native_id: &str) -> Option<u64> {
+/// The conversation's latest turn model and the share of the window Codex last reported it read, in percent.
+fn codex_context(store: &Path, native_id: &str) -> Option<Context> {
     let suffix = format!("-{native_id}.jsonl");
     let mut paths = vec![store.join("sessions")];
     // Rollouts live in sessions/YYYY/MM/DD/.
@@ -307,14 +326,38 @@ fn codex_context_percent(store: &Path, native_id: &str) -> Option<u64> {
                 .and_then(|name| name.to_str())
                 .is_some_and(|name| name.ends_with(&suffix))
     })?;
-    let (tokens, window) = transcript_tail(&rollout)?.lines().rev().find_map(|line| {
-        let line: serde_json::Value = serde_json::from_str(line).ok()?;
+    let tail = transcript_tail(&rollout)?;
+    let lines: Vec<serde_json::Value> = tail
+        .lines()
+        .rev()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+    let percent = lines.iter().find_map(|line| {
         let info = line.pointer("/payload/info")?;
         let tokens = info.pointer("/last_token_usage/input_tokens")?.as_u64()?;
         let window = info.get("model_context_window")?.as_u64()?;
-        (window > 0).then_some((tokens, window))
-    })?;
-    Some((tokens * 100 + window / 2) / window)
+        (window > 0).then(|| (tokens * 100 + window / 2) / window)
+    });
+    let model = lines
+        .iter()
+        .filter(|line| line.get("type").and_then(|kind| kind.as_str()) == Some("turn_context"))
+        .find_map(|line| line.pointer("/payload/model")?.as_str().map(String::from));
+    Some(Context { percent, model })
+}
+
+const CLASS_GLYPHS: [char; 4] = ['↑', '↗', '→', '↘'];
+
+/// Provider letter and class glyph (major, strong, medium, low) for a model, or None when unrecognised.
+fn model_tag(agent: &str, model: &str) -> Option<String> {
+    let (provider, families) = if agent == "claude" {
+        ('A', ["fable", "opus", "sonnet", "haiku"])
+    } else {
+        ('O', ["astra", "sol", "terra", "luna"])
+    };
+    let class = model
+        .split('-')
+        .find_map(|part| families.iter().position(|family| *family == part))?;
+    Some(format!("{provider}{}", CLASS_GLYPHS[class]))
 }
 
 // shortcut: 5.x models get 1M and older ones 200k, as ccusage assumes; a model with another window needs its own rule.
@@ -363,10 +406,11 @@ fn collect_with(
                 .find(|entry| entry.agent == agent && entry.native_id() == Some(&request.native_id))
                 .and_then(Entry::cost);
             let context = match agent.as_str() {
-                "claude" => claude_context_percent(&store, &request.native_id),
-                "codex" => codex_context_percent(&store, &request.native_id),
+                "claude" => claude_context(&store, &request.native_id),
+                "codex" => codex_context(&store, &request.native_id),
                 _ => None,
-            };
+            }
+            .unwrap_or_default();
             snapshots.insert(request.id.clone(), (request, cost, context));
         }
     }
@@ -493,11 +537,10 @@ mod tests {
             r#"{"type":"user","message":{"role":"user","content":"hi"}}"#.into(),
         ];
         std::fs::write(project.join(format!("{SID}.jsonl")), lines.join("\n")).unwrap();
-        assert_eq!(claude_context_percent(root.path(), SID), Some(46));
-        assert_eq!(
-            claude_context_percent(root.path(), "other-conversation"),
-            None
-        );
+        let context = claude_context(root.path(), SID).unwrap();
+        assert_eq!(context.percent, Some(46));
+        assert_eq!(context.model.as_deref(), Some("claude-sonnet-5-5"));
+        assert!(claude_context(root.path(), "other-conversation").is_none());
 
         let instance = instance(root.path(), "claude");
         let mut poller = UsagePoller::new();
@@ -506,8 +549,9 @@ mod tests {
                 session: vec![entry("claude")],
             })
         });
-        assert_eq!(poller.label(&instance, 80).unwrap(), "$4.32 46%");
-        assert_eq!(poller.label(&instance, 8).unwrap(), "$4.32");
+        assert_eq!(poller.label(&instance, 80).unwrap(), "$4.32 46% A→");
+        assert_eq!(poller.label(&instance, 8).unwrap(), "$4.32 A→");
+        assert_eq!(poller.label(&instance, 3).unwrap(), "$4…");
     }
 
     #[test]
@@ -527,17 +571,17 @@ mod tests {
             tokens(223_329, 828_400),
             r#"{"type":"event_msg","payload":{"type":"token_count","info":null}}"#.into(),
             r#"{"type":"response_item","payload":{"type":"message","role":"assistant"}}"#.into(),
+            r#"{"type":"turn_context","payload":{"model":"gpt-6.1-sol"}}"#.into(),
         ];
         std::fs::write(
             day.join(format!("rollout-2026-10-22T09-00-00-{SID}.jsonl")),
             lines.join("\n"),
         )
         .unwrap();
-        assert_eq!(codex_context_percent(root.path(), SID), Some(27));
-        assert_eq!(
-            codex_context_percent(root.path(), "other-conversation"),
-            None
-        );
+        let context = codex_context(root.path(), SID).unwrap();
+        assert_eq!(context.percent, Some(27));
+        assert_eq!(context.model.as_deref(), Some("gpt-6.1-sol"));
+        assert!(codex_context(root.path(), "other-conversation").is_none());
 
         let instance = instance(root.path(), "codex");
         let mut poller = UsagePoller::new();
@@ -546,7 +590,27 @@ mod tests {
                 session: vec![entry("codex")],
             })
         });
-        assert_eq!(poller.label(&instance, 80).unwrap(), "$4.32 27%");
+        assert_eq!(poller.label(&instance, 80).unwrap(), "$4.32 27% O↗");
+    }
+
+    #[test]
+    fn model_tag_names_the_provider_and_class() {
+        for (agent, model, tag) in [
+            ("claude", "claude-fable-5-1", Some("A↑")),
+            ("claude", "claude-opus-5-5", Some("A↗")),
+            ("claude", "claude-sonnet-5", Some("A→")),
+            ("claude", "claude-haiku-5-5", Some("A↘")),
+            ("claude", "opus", Some("A↗")),
+            ("claude", "<synthetic>", None),
+            ("claude", "inherit", None),
+            ("codex", "gpt-6-astra", Some("O↑")),
+            ("codex", "gpt-6.1-sol", Some("O↗")),
+            ("codex", "gpt-5.6-terra", Some("O→")),
+            ("codex", "gpt-6-luna", Some("O↘")),
+            ("codex", "gpt-reserve", None),
+        ] {
+            assert_eq!(model_tag(agent, model).as_deref(), tag, "{model}");
+        }
     }
 
     #[test]

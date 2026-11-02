@@ -37,6 +37,7 @@ For a new official AoE release, ask Claude Code or Codex in this repository: "Up
 - Press `n` to create a session, choose Claude Code or Codex, and select your project.
 - Press `Enter` to open a session and `Ctrl+b d` to return to the dashboard.
 - Read `$4.32 46%` as the session's estimated API cost and context usage. Costs refresh every 15 seconds; `?` means unavailable.
+- The letter and arrow after them show the model: `A` is Anthropic and `O` is OpenAI; `↑` is the top class, `↗` strong, `→` medium and `↘` low.
 - A spinning icon in the favorite color means the agent stopped to wait on background work. A working agent stays green.
 - Press `?` for all shortcuts.
 
