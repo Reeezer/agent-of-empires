@@ -41,7 +41,7 @@ For a new official AoE release, ask Claude Code or Codex in this repository: "Up
 - A spinning icon in the favorite color means the agent stopped to wait on background work. A working agent stays green.
 - Press `?` for all shortcuts.
 
-Cost estimates are equivalent API spend, including for subscription accounts. Context percentages are estimates based on the model and the latest reply.
+Cost estimates are equivalent API spend, including for subscription accounts. Context percentages are estimates based on the model and the latest reply or compaction.
 
 ## 🙏 Credits
 

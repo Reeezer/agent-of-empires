@@ -148,7 +148,7 @@ impl UsagePoller {
             .unwrap_or_default();
         let width = width - rendered_width(&tag);
         let cost = cost.map_or_else(|| "cost ?".into(), |cost| format!("${cost:.2}"));
-        let with_context = percent.map(|percent| format!("{cost} {percent}%"));
+        let with_context = percent.map(|percent| format!("{cost} {percent:02}%"));
         let label = with_context
             .filter(|label| rendered_width(label) <= width)
             .unwrap_or(cost);
@@ -251,6 +251,13 @@ struct TranscriptLine {
     #[serde(default)]
     is_sidechain: bool,
     message: Option<TranscriptMessage>,
+    compact_metadata: Option<CompactMetadata>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CompactMetadata {
+    post_tokens: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -280,17 +287,23 @@ fn transcript_tail(path: &Path) -> Option<String> {
 }
 
 /// The latest main-thread reply's model and the share of its window that reply read, in percent.
+/// A compaction newer than that reply counts instead, at the size Claude Code recorded for it.
 fn claude_context(store: &Path, native_id: &str) -> Option<Context> {
     let transcript = std::fs::read_dir(store.join("projects"))
         .ok()?
         .filter_map(Result::ok)
         .map(|project| project.path().join(format!("{native_id}.jsonl")))
         .find(|path| path.is_file())?;
+    let mut compacted = None;
     let (model, tokens) = transcript_tail(&transcript)?
         .lines()
         .rev()
         .find_map(|line| {
             let line: TranscriptLine = serde_json::from_str(line).ok()?;
+            if let Some(post_tokens) = line.compact_metadata.and_then(|meta| meta.post_tokens) {
+                compacted.get_or_insert(post_tokens);
+                return None;
+            }
             let message = line.message.filter(|_| !line.is_sidechain)?;
             let usage = message.usage?;
             let tokens = usage.input_tokens
@@ -298,6 +311,7 @@ fn claude_context(store: &Path, native_id: &str) -> Option<Context> {
                 + usage.cache_read_input_tokens;
             (tokens > 0).then_some((message.model, tokens))
         })?;
+    let tokens = compacted.unwrap_or(tokens);
     let window = context_window(model.as_deref().unwrap_or_default());
     Some(Context {
         percent: Some((tokens * 100 + window / 2) / window),
@@ -552,6 +566,36 @@ mod tests {
         assert_eq!(poller.label(&instance, 80).unwrap(), "$4.32 46% A→");
         assert_eq!(poller.label(&instance, 8).unwrap(), "$4.32 A→");
         assert_eq!(poller.label(&instance, 3).unwrap(), "$4…");
+        poller.seed_for_test(&instance, 4.32, Some(2));
+        assert_eq!(poller.label(&instance, 80).unwrap(), "$4.32 02%");
+    }
+
+    #[test]
+    fn context_follows_a_compaction_until_the_next_reply() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("projects/-tmp-project");
+        std::fs::create_dir_all(&project).unwrap();
+        let reply = |read: u64| {
+            serde_json::json!({"type": "assistant", "isSidechain": false, "message": {
+                "model": "claude-sonnet-5-5",
+                "usage": {"input_tokens": 2, "cache_read_input_tokens": read}
+            }})
+            .to_string()
+        };
+        let compaction = serde_json::json!({"type": "system", "subtype": "compact_boundary",
+            "compactMetadata": {"trigger": "manual", "preTokens": 654_579, "postTokens": 20_489}})
+        .to_string();
+        let summary = r#"{"type":"user","isCompactSummary":true,"message":{"role":"user","content":"summary"}}"#;
+        let percent = |lines: &[String]| {
+            std::fs::write(project.join(format!("{SID}.jsonl")), lines.join("\n")).unwrap();
+            claude_context(root.path(), SID).unwrap().percent
+        };
+        let before = [reply(100_000), reply(654_577)];
+        assert_eq!(percent(&before), Some(65));
+        let compacted = [before[1].clone(), compaction.clone(), summary.into()];
+        assert_eq!(percent(&compacted), Some(2));
+        let next = [compaction, summary.into(), reply(50_000)];
+        assert_eq!(percent(&next), Some(5));
     }
 
     #[test]
