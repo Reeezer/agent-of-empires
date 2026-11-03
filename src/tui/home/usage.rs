@@ -13,7 +13,8 @@ use crate::session::Instance;
 use crate::tui::components::{rendered_width, truncate_to_width};
 use crate::tui::worker::Worker;
 
-const REFRESH_INTERVAL: Duration = Duration::from_secs(15);
+const REFRESH_INTERVAL: Duration = Duration::from_secs(2);
+const COST_INTERVAL: Duration = Duration::from_secs(15);
 const TRANSCRIPT_TAIL_BYTES: u64 = 1 << 20;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -85,7 +86,7 @@ impl Request {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Context {
     percent: Option<u64>,
     model: Option<String>,
@@ -103,7 +104,7 @@ pub(super) struct UsagePoller {
 impl UsagePoller {
     pub(super) fn new() -> Self {
         Self {
-            worker: Worker::spawn("session-usage", collect),
+            worker: Worker::spawn("session-usage", collector()),
             snapshots: HashMap::new(),
             last_refresh: None,
             pending: false,
@@ -264,6 +265,7 @@ struct CompactMetadata {
 struct TranscriptMessage {
     model: Option<String>,
     usage: Option<TokenUsage>,
+    content: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -286,8 +288,9 @@ fn transcript_tail(path: &Path) -> Option<String> {
     Some(String::from_utf8_lossy(&tail).into_owned())
 }
 
-/// The latest main-thread reply's model and the share of its window that reply read, in percent.
-/// A compaction newer than that reply counts instead, at the size Claude Code recorded for it.
+/// The model in use and the share of the window the latest main-thread reply read, in percent.
+/// A `/model` newer than that reply sets the model, and a compaction newer than it sets the
+/// size, at what Claude Code recorded for it.
 fn claude_context(store: &Path, native_id: &str) -> Option<Context> {
     let transcript = std::fs::read_dir(store.join("projects"))
         .ok()?
@@ -295,6 +298,7 @@ fn claude_context(store: &Path, native_id: &str) -> Option<Context> {
         .map(|project| project.path().join(format!("{native_id}.jsonl")))
         .find(|path| path.is_file())?;
     let mut compacted = None;
+    let mut switched = None;
     let (model, tokens) = transcript_tail(&transcript)?
         .lines()
         .rev()
@@ -305,6 +309,10 @@ fn claude_context(store: &Path, native_id: &str) -> Option<Context> {
                 return None;
             }
             let message = line.message.filter(|_| !line.is_sidechain)?;
+            if let Some(name) = message.content.as_ref().and_then(switched_model) {
+                switched.get_or_insert(name);
+                return None;
+            }
             let usage = message.usage?;
             let tokens = usage.input_tokens
                 + usage.cache_creation_input_tokens
@@ -315,11 +323,21 @@ fn claude_context(store: &Path, native_id: &str) -> Option<Context> {
     let window = context_window(model.as_deref().unwrap_or_default());
     Some(Context {
         percent: Some((tokens * 100 + window / 2) / window),
-        model,
+        model: switched.or(model),
     })
 }
 
-/// The conversation's latest turn model and the share of the window Codex last reported it read, in percent.
+/// The display name that `/model` printed, such as `Opus 5.5`. Only a plain-text user line counts,
+/// so a tool result that quotes the output does not.
+fn switched_model(content: &serde_json::Value) -> Option<String> {
+    let output = content
+        .as_str()?
+        .strip_prefix("<local-command-stdout>Set model to `")?;
+    Some(output.split_once('`')?.0.into())
+}
+
+/// The conversation's current model, from the latest turn or settings change, and the share of the
+/// window Codex last reported it read, in percent.
 fn codex_context(store: &Path, native_id: &str) -> Option<Context> {
     let suffix = format!("-{native_id}.jsonl");
     let mut paths = vec![store.join("sessions")];
@@ -352,10 +370,15 @@ fn codex_context(store: &Path, native_id: &str) -> Option<Context> {
         let window = info.get("model_context_window")?.as_u64()?;
         (window > 0).then(|| (tokens * 100 + window / 2) / window)
     });
-    let model = lines
-        .iter()
-        .filter(|line| line.get("type").and_then(|kind| kind.as_str()) == Some("turn_context"))
-        .find_map(|line| line.pointer("/payload/model")?.as_str().map(String::from));
+    // Codex records `/model` as a settings event at once, before the next turn's context.
+    let model = lines.iter().find_map(|line| {
+        let model = match line.get("type")?.as_str()? {
+            "turn_context" => line.pointer("/payload/model"),
+            "event_msg" => line.pointer("/payload/thread_settings/model"),
+            _ => None,
+        };
+        model?.as_str().map(String::from)
+    });
     Some(Context { percent, model })
 }
 
@@ -369,8 +392,12 @@ fn model_tag(agent: &str, model: &str) -> Option<String> {
         ('O', ["astra", "sol", "terra", "luna"])
     };
     let class = model
-        .split('-')
-        .find_map(|part| families.iter().position(|family| *family == part))?;
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .find_map(|part| {
+            families
+                .iter()
+                .position(|family| family.eq_ignore_ascii_case(part))
+        })?;
     Some(format!("{provider}{}", CLASS_GLYPHS[class]))
 }
 
@@ -388,13 +415,25 @@ fn context_window(model: &str) -> u64 {
     }
 }
 
-fn collect(requests: Vec<Request>) -> Snapshots {
-    collect_with(requests, report)
+/// Reads the transcripts on every pass, but runs the heavy cost report only every `COST_INTERVAL`.
+fn collector() -> impl FnMut(Vec<Request>) -> Snapshots {
+    let mut previous = Snapshots::new();
+    let mut costed_at: Option<Instant> = None;
+    move |requests| {
+        let reuse_costs = costed_at.is_some_and(|at| at.elapsed() < COST_INTERVAL);
+        let snapshots = collect_with(requests, report, reuse_costs.then_some(&previous));
+        if !reuse_costs {
+            costed_at = Some(Instant::now());
+        }
+        previous.clone_from(&snapshots);
+        snapshots
+    }
 }
 
 fn collect_with(
     requests: Vec<Request>,
     read_report: impl Fn(&Path, &str) -> anyhow::Result<Report>,
+    reuse_costs: Option<&Snapshots>,
 ) -> Snapshots {
     let mut groups: HashMap<(PathBuf, String), Vec<Request>> = HashMap::new();
     let mut snapshots = HashMap::new();
@@ -407,18 +446,30 @@ fn collect_with(
         }
     }
     for ((store, agent), requests) in groups {
-        let entries = match read_report(&store, &agent) {
-            Ok(report) => report.session,
-            Err(error) => {
-                tracing::warn!(target: "tui.usage", %error, "Cannot refresh session costs");
-                Vec::new()
+        let entries = if reuse_costs.is_some() {
+            Vec::new()
+        } else {
+            match read_report(&store, &agent) {
+                Ok(report) => report.session,
+                Err(error) => {
+                    tracing::warn!(target: "tui.usage", %error, "Cannot refresh session costs");
+                    Vec::new()
+                }
             }
         };
         for request in requests {
-            let cost = entries
-                .iter()
-                .find(|entry| entry.agent == agent && entry.native_id() == Some(&request.native_id))
-                .and_then(Entry::cost);
+            let cost = match reuse_costs {
+                Some(previous) => previous
+                    .get(&request.id)
+                    .filter(|(old, ..)| *old == request)
+                    .and_then(|(_, cost, _)| *cost),
+                None => entries
+                    .iter()
+                    .find(|entry| {
+                        entry.agent == agent && entry.native_id() == Some(&request.native_id)
+                    })
+                    .and_then(Entry::cost),
+            };
             let context = match agent.as_str() {
                 "claude" => claude_context(&store, &request.native_id),
                 "codex" => codex_context(&store, &request.native_id),
@@ -480,15 +531,19 @@ mod tests {
             let request = Request::for_instance(&instance).unwrap();
             let mut poller = UsagePoller::new();
             for cost in [4.32, 5.67] {
-                poller.snapshots = collect_with(vec![request.clone()], |store, reported_agent| {
-                    assert_eq!(store, root.path().canonicalize().unwrap());
-                    assert_eq!(reported_agent, agent);
-                    let mut current = entry(agent);
-                    current.total_cost = Some(cost);
-                    Ok(Report {
-                        session: vec![current],
-                    })
-                });
+                poller.snapshots = collect_with(
+                    vec![request.clone()],
+                    |store, reported_agent| {
+                        assert_eq!(store, root.path().canonicalize().unwrap());
+                        assert_eq!(reported_agent, agent);
+                        let mut current = entry(agent);
+                        current.total_cost = Some(cost);
+                        Ok(Report {
+                            session: vec![current],
+                        })
+                    },
+                    None,
+                );
                 let expected = format!("${cost:.2}");
                 assert_eq!(poller.label(&instance, 80).unwrap(), expected);
                 assert_eq!(poller.label(&instance, expected.len()).unwrap(), expected);
@@ -558,11 +613,15 @@ mod tests {
 
         let instance = instance(root.path(), "claude");
         let mut poller = UsagePoller::new();
-        poller.snapshots = collect_with(vec![Request::for_instance(&instance).unwrap()], |_, _| {
-            Ok(Report {
-                session: vec![entry("claude")],
-            })
-        });
+        poller.snapshots = collect_with(
+            vec![Request::for_instance(&instance).unwrap()],
+            |_, _| {
+                Ok(Report {
+                    session: vec![entry("claude")],
+                })
+            },
+            None,
+        );
         assert_eq!(poller.label(&instance, 80).unwrap(), "$4.32 46% A→");
         assert_eq!(poller.label(&instance, 8).unwrap(), "$4.32 A→");
         assert_eq!(poller.label(&instance, 3).unwrap(), "$4…");
@@ -629,12 +688,109 @@ mod tests {
 
         let instance = instance(root.path(), "codex");
         let mut poller = UsagePoller::new();
-        poller.snapshots = collect_with(vec![Request::for_instance(&instance).unwrap()], |_, _| {
-            Ok(Report {
-                session: vec![entry("codex")],
-            })
-        });
+        poller.snapshots = collect_with(
+            vec![Request::for_instance(&instance).unwrap()],
+            |_, _| {
+                Ok(Report {
+                    session: vec![entry("codex")],
+                })
+            },
+            None,
+        );
         assert_eq!(poller.label(&instance, 80).unwrap(), "$4.32 27% O↗");
+    }
+
+    #[test]
+    fn codex_model_follows_a_settings_change_before_the_next_turn() {
+        let root = tempfile::tempdir().unwrap();
+        let day = root.path().join("sessions/2026/10/22");
+        std::fs::create_dir_all(&day).unwrap();
+        let rollout = day.join(format!("rollout-2026-10-22T09-00-00-{SID}.jsonl"));
+        let turn = r#"{"type":"turn_context","payload":{"model":"gpt-6.1-sol"}}"#;
+        let settings = |model: &str| {
+            serde_json::json!({"type": "event_msg", "payload": {
+                "type": "thread_settings_applied", "thread_settings": {"model": model}
+            }})
+            .to_string()
+        };
+        let other_event = r#"{"type":"event_msg","payload":{"type":"task_complete"}}"#;
+        for (lines, model) in [
+            (vec![turn.into(), other_event.into()], "gpt-6.1-sol"),
+            (vec![turn.into(), settings("gpt-6-astra")], "gpt-6-astra"),
+            (
+                vec![settings("gpt-6-astra"), turn.into(), other_event.into()],
+                "gpt-6.1-sol",
+            ),
+        ] {
+            std::fs::write(&rollout, lines.join("\n")).unwrap();
+            let context = codex_context(root.path(), SID).unwrap();
+            assert_eq!(context.model.as_deref(), Some(model));
+        }
+    }
+
+    #[test]
+    fn claude_model_follows_a_model_command_until_the_next_reply() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("projects/-tmp-project");
+        std::fs::create_dir_all(&project).unwrap();
+        let reply = |model: &str| {
+            serde_json::json!({"type": "assistant", "isSidechain": false, "message": {
+                "model": model,
+                "usage": {"input_tokens": 2, "cache_read_input_tokens": 100_000}
+            }})
+            .to_string()
+        };
+        let user = |content: serde_json::Value| {
+            serde_json::json!({"type": "user", "message": {"role": "user", "content": content}})
+                .to_string()
+        };
+        let output = "<local-command-stdout>Set model to `Opus 5.5` and saved as your default for new sessions</local-command-stdout>";
+        let quoted = serde_json::json!([{"type": "tool_result", "content": output}]);
+        let tag = |lines: &[String]| {
+            std::fs::write(project.join(format!("{SID}.jsonl")), lines.join("\n")).unwrap();
+            let context = claude_context(root.path(), SID).unwrap();
+            assert_eq!(context.percent, Some(10));
+            model_tag("claude", &context.model.unwrap())
+        };
+        let before = reply("claude-sonnet-5-5");
+        assert_eq!(tag(&[before.clone()]).as_deref(), Some("A→"));
+        assert_eq!(
+            tag(&[before.clone(), user(output.into())]).as_deref(),
+            Some("A↗")
+        );
+        assert_eq!(tag(&[before.clone(), user(quoted)]).as_deref(), Some("A→"));
+        assert_eq!(
+            tag(&[before, user(output.into()), reply("claude-haiku-5-5")]).as_deref(),
+            Some("A↘")
+        );
+    }
+
+    #[test]
+    fn cheap_pass_keeps_the_last_cost_but_reads_the_context_again() {
+        let root = tempfile::tempdir().unwrap();
+        let instance = instance(root.path(), "claude");
+        let request = Request::for_instance(&instance).unwrap();
+        let first = collect_with(
+            vec![request.clone()],
+            |_, _| {
+                Ok(Report {
+                    session: vec![entry("claude")],
+                })
+            },
+            None,
+        );
+        let unreachable_report = |_: &Path, _: &str| -> anyhow::Result<Report> {
+            panic!("a cheap pass must not run the cost report")
+        };
+        let cheap = collect_with(vec![request.clone()], unreachable_report, Some(&first));
+        assert_eq!(cheap[&request.id].1, Some(4.32));
+
+        let other = Request {
+            native_id: "another-conversation".into(),
+            ..request.clone()
+        };
+        let cheap = collect_with(vec![other], unreachable_report, Some(&first));
+        assert_eq!(cheap[&request.id].1, None);
     }
 
     #[test]
@@ -645,6 +801,8 @@ mod tests {
             ("claude", "claude-sonnet-5", Some("A→")),
             ("claude", "claude-haiku-5-5", Some("A↘")),
             ("claude", "opus", Some("A↗")),
+            ("claude", "Sonnet 5.5", Some("A→")),
+            ("claude", "Opus 5.5 (default)", Some("A↗")),
             ("claude", "<synthetic>", None),
             ("claude", "inherit", None),
             ("codex", "gpt-6-astra", Some("O↑")),
