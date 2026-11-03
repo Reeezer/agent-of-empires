@@ -76,6 +76,20 @@ pub enum SessionCommands {
     /// Clear the favorite flag on a session.
     Unfavorite(SessionIdArgs),
 
+    /// Mark a session as waiting on other people (a Slack reply, a review).
+    /// The row gets its own glyph and the Attention sort files it below the
+    /// sessions that need you. Intended for a running agent to flag its own
+    /// session, e.g. `aoe session wait-on "$AOE_INSTANCE_ID"`.
+    WaitOn(SessionIdArgs),
+
+    /// Mark a session as waiting for a review of its pull request. Like `wait-on`, with its own
+    /// color and its own place in the Attention sort, e.g.
+    /// `aoe session wait-review "$AOE_INSTANCE_ID"`.
+    WaitReview(SessionIdArgs),
+
+    /// Clear the waiting-on-others or waiting-for-review mark on a session.
+    WaitOff(SessionIdArgs),
+
     /// Set (or clear) a per-session color label, rendered as a colored dot in
     /// the web sidebar for at-a-glance status signaling. Intended for a
     /// running agent to flag its own state, e.g.
@@ -411,6 +425,27 @@ pub async fn run(profile: &str, command: SessionCommands) -> Result<()> {
         }
         SessionCommands::Unfavorite(args) => {
             mark_session(profile, args, "Unfavorited", Instance::unfavorite).await
+        }
+        SessionCommands::WaitOn(args) => {
+            mark_session(profile, args, "Waiting on others", Instance::wait_on_others).await
+        }
+        SessionCommands::WaitReview(args) => {
+            mark_session(
+                profile,
+                args,
+                "Waiting for review",
+                Instance::wait_for_review,
+            )
+            .await
+        }
+        SessionCommands::WaitOff(args) => {
+            mark_session(
+                profile,
+                args,
+                "No longer waiting",
+                Instance::stop_waiting_on_others,
+            )
+            .await
         }
         SessionCommands::Color(args) => set_color_session(profile, args).await,
         SessionCommands::Archive(args) => archive_session(profile, args).await,

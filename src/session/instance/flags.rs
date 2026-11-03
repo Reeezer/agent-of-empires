@@ -201,6 +201,33 @@ impl Instance {
         self.favorited_at.is_some()
     }
 
+    /// Mark the session as waiting on a person's answer. Re-marking keeps the first time, so the
+    /// age on the row counts from when the user asked.
+    pub fn wait_on_others(&mut self) {
+        self.waiting_on_others_since.get_or_insert_with(Utc::now);
+        self.waiting_for_review = false;
+    }
+
+    /// Mark the session as waiting for a review of its pull request.
+    pub fn wait_for_review(&mut self) {
+        self.waiting_on_others_since.get_or_insert_with(Utc::now);
+        self.waiting_for_review = true;
+    }
+
+    pub fn stop_waiting_on_others(&mut self) {
+        self.waiting_on_others_since = None;
+        self.waiting_for_review = false;
+    }
+
+    /// Waiting on a person or a review.
+    pub fn is_waiting_on_others(&self) -> bool {
+        self.waiting_on_others_since.is_some()
+    }
+
+    pub fn is_waiting_for_review(&self) -> bool {
+        self.is_waiting_on_others() && self.waiting_for_review
+    }
+
     /// Set (or clear, with `None`) the per-session color label. Only a value in the
     /// [`SESSION_COLORS`] palette is accepted.
     pub fn set_color(&mut self, color: Option<String>) -> Result<(), String> {
@@ -597,5 +624,24 @@ mod tests {
         inst.idle_entered_at = ago(5);
         let age = inst.idle_age().unwrap().as_secs();
         assert!((4..=30).contains(&age));
+    }
+
+    #[test]
+    fn waiting_kinds_switch_in_place_and_clear_together() {
+        let mut inst = Instance::new("t", "/tmp/t");
+        inst.wait_for_review();
+        let since = inst.waiting_on_others_since;
+        assert!(inst.is_waiting_for_review() && inst.is_waiting_on_others());
+
+        inst.wait_on_others();
+        assert!(inst.is_waiting_on_others() && !inst.is_waiting_for_review());
+        assert_eq!(
+            inst.waiting_on_others_since, since,
+            "switching keeps the time"
+        );
+
+        inst.wait_for_review();
+        inst.stop_waiting_on_others();
+        assert!(!inst.is_waiting_on_others() && !inst.is_waiting_for_review());
     }
 }

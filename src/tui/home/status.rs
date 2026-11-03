@@ -45,6 +45,37 @@ impl HomeView {
         }
     }
 
+    fn end_wait_on_others(&mut self, id: &str) {
+        if let Err(error) = self.apply_user_action(id, |inst| inst.stop_waiting_on_others()) {
+            tracing::warn!(target: "tui.home", id, %error, "failed to end the wait on others");
+        }
+    }
+
+    /// End the wait on others for rows whose agent was handed a prompt after the mark. Typing in
+    /// an attached pane never reaches the dashboard, so the identity hook's timestamp is the only
+    /// record of it. Returns whether any row changed.
+    pub fn end_waits_after_prompts(&mut self) -> bool {
+        let resumed: Vec<String> = self
+            .instances
+            .values()
+            .filter(|inst| {
+                inst.waiting_on_others_since.is_some_and(|since| {
+                    crate::hooks::read_hook_prompt_time(&inst.id).is_some_and(|prompted| {
+                        chrono::DateTime::<chrono::Utc>::from(prompted) > since
+                    })
+                })
+            })
+            .map(|inst| inst.id.clone())
+            .collect();
+        for id in &resumed {
+            self.end_wait_on_others(id);
+        }
+        if !resumed.is_empty() && self.sort_order == crate::session::config::SortOrder::Attention {
+            self.rebuild_flat_items_keeping_cursor();
+        }
+        !resumed.is_empty()
+    }
+
     /// Apply any pending status updates from the background poller.
     /// Returns true if updates were applied.
     pub fn apply_status_updates(&mut self) -> bool {
@@ -624,6 +655,20 @@ impl HomeView {
                         self.handle_status_transition(
                             &inst, old, new_status, play_sound, run_hooks,
                         );
+                    }
+                    // Working again after a rest ends the wait on others: a CI watch fired, or
+                    // the user wrote to the session.
+                    if matches!(old, Status::Idle | Status::Unknown)
+                        && new_status == Status::Running
+                        && self
+                            .get_instance(&update.id)
+                            .is_some_and(|inst| inst.is_waiting_on_others())
+                    {
+                        self.end_wait_on_others(&update.id);
+                    }
+                    // The row's group changed, so it moves now rather than at the next reload.
+                    if self.sort_order == crate::session::config::SortOrder::Attention {
+                        self.rebuild_flat_items_keeping_cursor();
                     }
                 }
             }

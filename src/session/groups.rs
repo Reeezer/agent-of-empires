@@ -607,13 +607,16 @@ fn attention_tier(inst: &Instance) -> u8 {
         return 99;
     }
     match inst.status {
-        Waiting => 0,                        // agent paused, needs human input, TOP priority
-        Error => 1,                          // broken, needs attention
-        Idle => 2,                           // turn complete, ready for next prompt
-        Unknown => 3,                        // status undetermined, glance warranted
-        Running => 4,                        // actively working, leave alone
-        Stopped => 5, // dormant, sinks below running so the TUI shows live sessions first
-        Starting | Creating | Deleting => 6, // transient, sink to bottom
+        Waiting => 0, // agent paused, needs human input, TOP priority
+        Error => 1,   // broken, needs attention
+        Idle | Unknown if inst.is_waiting_for_review() => 5, // the user is waiting for a review
+        Idle | Unknown if inst.is_waiting_on_others() => 4, // the user is waiting on a person
+        Idle | Running if inst.waiting_on_background => 6, // waiting on a command it started
+        Idle => 2,    // turn complete, ready for next prompt
+        Unknown => 3, // status undetermined, glance warranted
+        Running => 7, // actively working, leave alone
+        Stopped => 8, // dormant, sinks below running so the TUI shows live sessions first
+        Starting | Creating | Deleting => 9, // transient, sink to bottom
     }
 }
 
@@ -635,18 +638,11 @@ fn attention_rank(tier: u8, unread: bool, unread_enabled: bool) -> u8 {
     }
 }
 
-/// Key used to sort sessions by Attention.
+/// Key used to sort sessions by Attention: urgency, status group, favorite, then title.
 #[allow(clippy::type_complexity)]
 fn attention_session_key(
     inst: &Instance,
-) -> (
-    bool,
-    u8,
-    bool,
-    bool,
-    std::cmp::Reverse<Option<DateTime<Utc>>>,
-    Option<DateTime<Utc>>,
-) {
+) -> (bool, u8, bool, bool, String, Reverse<Option<DateTime<Utc>>>) {
     let tier = attention_tier(inst);
     // Urgent is the cross-tier promoter: an agent that has flagged itself urgent rises above all
     // non-urgent rows regardless of status tier.
@@ -665,36 +661,28 @@ fn attention_session_key(
             tier,
             !favorite_bias,
             ts.is_none(),
+            String::new(),
             Reverse(ts),
-            None,
         );
     }
     let rank = attention_rank(tier, inst.is_unread(), crate::session::unread_enabled());
-    // Non-archived: "longest aging" = oldest last_accessed_at first (ASC).
     (
         !urgent_bias,
         rank,
         !favorite_bias,
-        inst.last_accessed_at.is_none(),
+        false,
+        inst.title.to_lowercase(),
         Reverse(None),
-        inst.last_accessed_at,
     )
 }
 
-/// Key used to sort groups by Attention.
+/// Key used to sort groups by Attention: same shape as the session key, ending in the group path.
 #[allow(clippy::type_complexity)]
 fn attention_group_key(
     path: &str,
     group_archived_at: Option<DateTime<Utc>>,
     instances: &[Instance],
-) -> (
-    bool,
-    u8,
-    bool,
-    bool,
-    Reverse<Option<DateTime<Utc>>>,
-    Option<DateTime<Utc>>,
-) {
+) -> (bool, u8, bool, bool, String, Reverse<Option<DateTime<Utc>>>) {
     let prefix = format!("{}/", path);
     let members: Vec<&Instance> = instances
         .iter()
@@ -705,9 +693,9 @@ fn attention_group_key(
         // Empty group: if marked archived, sink to tier 99 with the group's
         // own archived_at; otherwise leave at u8::MAX (existing behavior).
         if let Some(ts) = group_archived_at {
-            return (true, 99, true, false, Reverse(Some(ts)), None);
+            return (true, 99, true, false, String::new(), Reverse(Some(ts)));
         }
-        return (true, u8::MAX, true, true, Reverse(None), None);
+        return (true, u8::MAX, true, true, String::new(), Reverse(None));
     }
 
     let min_tier = members
@@ -733,13 +721,11 @@ fn attention_group_key(
             99,
             !favorite_bias,
             ts.is_none(),
+            String::new(),
             Reverse(ts),
-            None,
         );
     }
 
-    // Non-archived: "longest aging" = oldest max(last_accessed_at) first.
-    let max_last = members.iter().filter_map(|i| i.last_accessed_at).max();
     // Fold the unread promoter in at the group level too, so a project containing an unread session
     // floats up just like the flat Attention view does (a group with an unread Idle outranks a
     // group whose best member is a read Error).
@@ -752,9 +738,9 @@ fn attention_group_key(
         !urgent_bias,
         rank,
         !favorite_bias,
-        max_last.is_none(),
+        false,
+        path.to_lowercase(),
         Reverse(None),
-        max_last,
     )
 }
 
@@ -1464,6 +1450,8 @@ mod tests {
 
     #[test]
     fn attention_session_sort() {
+        // Within a status group the order is alphabetical, case-insensitive, whatever the
+        // last access.
         let now = Utc::now();
         let idle_at = |title: &str, ago: Option<Duration>| {
             let mut i = with_status(title, "", Status::Idle);
@@ -1473,10 +1461,10 @@ mod tests {
         let fresh = idle_at("fresh", Some(Duration::minutes(5)));
         let stale = idle_at("stale", Some(Duration::hours(11)));
         let middle = idle_at("middle", Some(Duration::minutes(40)));
-        let untouched = idle_at("untouched", None);
+        let untouched = idle_at("Untouched", None);
         let mut sessions = vec![&fresh, &middle, &stale, &untouched];
         sort_sessions(&mut sessions, SortOrder::Attention);
-        assert_eq!(titles(&sessions), ["stale", "middle", "fresh", "untouched"]);
+        assert_eq!(titles(&sessions), ["fresh", "middle", "stale", "Untouched"]);
 
         let waiting = with_status("w", "", Status::Waiting);
         let errored = with_status("e", "", Status::Error);
@@ -1486,6 +1474,88 @@ mod tests {
         let mut sessions = vec![&waiting, &errored, &archived, &idle];
         sort_sessions(&mut sessions, SortOrder::Attention);
         assert_eq!(titles(&sessions), ["w", "e", "i", "aw"]);
+    }
+
+    #[test]
+    fn attention_groups_by_state() {
+        let marked = |title: &str, status, review: bool| {
+            let mut inst = with_status(title, "", status);
+            if review {
+                inst.wait_for_review();
+            } else {
+                inst.wait_on_others();
+            }
+            inst
+        };
+        let on_command = |title: &str, status| {
+            let mut inst = with_status(title, "", status);
+            inst.waiting_on_background = true;
+            inst
+        };
+        // Only a resting row moves down for a mark: a prompt, an error or live work keeps its group.
+        for (review, rest) in [(false, 4), (true, 5)] {
+            for (status, tier) in [
+                (Status::Waiting, 0),
+                (Status::Error, 1),
+                (Status::Idle, rest),
+                (Status::Unknown, rest),
+                (Status::Running, 7),
+            ] {
+                assert_eq!(
+                    attention_tier(&marked("m", status, review)),
+                    tier,
+                    "{status:?} review={review}"
+                );
+            }
+        }
+        // A command the session started groups Idle and Running rows together, ahead of plain
+        // Running. A mark wins on a resting row; a working row has none to apply.
+        for (inst, tier) in [
+            (on_command("c", Status::Idle), 6),
+            (on_command("c", Status::Running), 6),
+            (on_command("c", Status::Waiting), 0),
+            (on_command("c", Status::Error), 1),
+        ] {
+            assert_eq!(attention_tier(&inst), tier, "{:?}", inst.status);
+        }
+        for (status, tier) in [(Status::Idle, 5), (Status::Running, 6)] {
+            let mut both = marked("both", status, true);
+            both.waiting_on_background = true;
+            assert_eq!(attention_tier(&both), tier, "{status:?}");
+        }
+
+        let mut archived = marked("archived", Status::Idle, true);
+        archived.archive();
+        assert_eq!(attention_tier(&archived), 99);
+
+        let pool = vec![
+            with_status("running", "", Status::Running),
+            on_command("ci", Status::Idle),
+            marked("review", Status::Idle, true),
+            marked("on-others", Status::Idle, false),
+            with_status("idle-b", "", Status::Idle),
+            with_status("idle-a", "", Status::Idle),
+            with_status("prompt", "", Status::Waiting),
+        ];
+        let order: Vec<_> = flatten_sessions_by_attention(&pool)
+            .into_iter()
+            .map(|item| match item {
+                Item::Session { id, .. } => pool.iter().find(|i| i.id == id).unwrap().title.clone(),
+                Item::Group { .. } => unreachable!(),
+            })
+            .collect();
+        assert_eq!(
+            order,
+            [
+                "prompt",
+                "idle-a",
+                "idle-b",
+                "on-others",
+                "review",
+                "ci",
+                "running"
+            ]
+        );
     }
 
     #[test]
@@ -1512,14 +1582,14 @@ mod tests {
     #[serial_test::serial]
     fn attention_group_key_cases() {
         let now = Utc::now();
-        let mut fresh = with_status("f", "fresh", Status::Idle);
-        fresh.last_accessed_at = Some(now - Duration::minutes(5));
-        let mut stale = with_status("s", "stale", Status::Idle);
-        stale.last_accessed_at = Some(now - Duration::hours(11));
-        let instances = vec![fresh, stale];
+        let instances = vec![
+            with_status("s", "stale", Status::Idle),
+            with_status("f", "Fresh", Status::Idle),
+        ];
         assert!(
-            attention_group_key("stale", None, &instances)
-                < attention_group_key("fresh", None, &instances)
+            attention_group_key("Fresh", None, &instances)
+                < attention_group_key("stale", None, &instances),
+            "groups of one status order by name, case-insensitive"
         );
 
         let archived = |title: &str, status: Status| {

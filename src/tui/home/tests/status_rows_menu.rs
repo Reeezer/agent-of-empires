@@ -980,6 +980,197 @@ fn toggle_favorite_at_cursor_round_trip() {
     assert!(!env.view.instance_at(0).is_favorited());
 }
 
+/// Titles of the session rows, top to bottom.
+fn session_titles(view: &HomeView) -> Vec<String> {
+    view.flat_items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Session { id, .. } => view.get_instance(id).map(|i| i.title.clone()),
+            Item::Group { .. } => None,
+        })
+        .collect()
+}
+
+/// Marking a resting row as waiting on others files it below the rows that need the user,
+/// and clearing the mark brings it back.
+#[test]
+#[serial]
+fn toggle_waiting_on_others_moves_the_row_in_attention_sort() {
+    let instances = [
+        instance_with_status("asked", "/tmp/asked", Status::Idle),
+        instance_with_status("needs-me", "/tmp/needs-me", Status::Idle),
+        instance_with_status("running", "/tmp/running", Status::Running),
+    ];
+    let mut env = attention_view(&instances);
+    assert_eq!(session_titles(&env.view), ["asked", "needs-me", "running"]);
+
+    let asked = env
+        .view
+        .instances
+        .values()
+        .find(|i| i.title == "asked")
+        .unwrap()
+        .id
+        .clone();
+    env.view.selected_session = Some(asked.clone());
+    env.view.toggle_waiting_on_others_at_cursor().unwrap();
+    assert!(env
+        .view
+        .get_instance(&asked)
+        .unwrap()
+        .is_waiting_on_others());
+    assert_eq!(session_titles(&env.view), ["needs-me", "asked", "running"]);
+
+    env.view.toggle_waiting_on_others_at_cursor().unwrap();
+    assert!(!env
+        .view
+        .get_instance(&asked)
+        .unwrap()
+        .is_waiting_on_others());
+    assert_eq!(session_titles(&env.view), ["asked", "needs-me", "running"]);
+}
+
+/// Attention-sorted view of `instances` in manual grouping.
+fn attention_view(instances: &[Instance]) -> TestEnv {
+    let mut env = seeded_env(test_home(), instances, false);
+    env.view.group_by = crate::session::config::GroupByMode::Manual;
+    env.view.sort_order = crate::session::config::SortOrder::Attention;
+    env.view.rebuild_flat_items();
+    env
+}
+
+fn id_of(view: &HomeView, title: &str) -> String {
+    view.instances
+        .values()
+        .find(|i| i.title == title)
+        .unwrap()
+        .id
+        .clone()
+}
+
+/// The session working again ends the wait on others: a CI watch fired or the user wrote to it.
+/// Staying Running, or coming back from a prompt, does not.
+#[test]
+#[serial]
+fn working_again_ends_the_wait_on_others() {
+    use crate::tui::status_poller::IdleIntent;
+    let mut env = attention_view(&[instance_with_status("asked", "/tmp/asked", Status::Idle)]);
+    let id = id_of(&env.view, "asked");
+    env.view
+        .apply_user_action(&id, |inst| inst.wait_on_others())
+        .unwrap();
+    let waiting = |env: &TestEnv| env.view.get_instance(&id).unwrap().is_waiting_on_others();
+
+    env.view
+        .apply_one_status_update(status_update(&id, Status::Idle, IdleIntent::Keep));
+    assert!(waiting(&env), "resting keeps the mark");
+
+    env.view
+        .apply_one_status_update(status_update(&id, Status::Running, IdleIntent::Keep));
+    assert!(!waiting(&env), "working again ends it");
+    env.view.reload().unwrap();
+    assert!(!waiting(&env), "and the end is saved");
+}
+
+/// The identity hook's timestamp shows the user wrote to the agent after the mark, even when
+/// they typed in an attached pane the dashboard cannot see.
+#[test]
+#[serial]
+#[serial(hook_base)]
+fn a_prompt_after_the_mark_ends_the_wait_on_others() {
+    let (_hooks, _base, _hooks_tmp) = crate::hooks::test_support::BaseGuard::ready();
+    let mut env = attention_view(&[instance_with_status("asked", "/tmp/asked", Status::Idle)]);
+    let id = id_of(&env.view, "asked");
+    crate::hooks::write_session_id_via_guard(&id, "sid", None).unwrap();
+
+    let hour = chrono::Duration::hours(1);
+    for (marked_at, still_waiting) in [
+        (chrono::Utc::now() + hour, true),
+        (chrono::Utc::now() - hour, false),
+    ] {
+        env.view
+            .mutate_instance(&id, |inst| inst.waiting_on_others_since = Some(marked_at));
+        env.view.end_waits_after_prompts();
+        let marked = env.view.get_instance(&id).unwrap().is_waiting_on_others();
+        assert_eq!(marked, still_waiting, "marked at {marked_at}");
+    }
+}
+
+/// Waiting for review is its own group: it sorts after waiting on a person, switches with the
+/// other palette action, and the kind survives a reload.
+#[test]
+#[serial]
+fn toggle_waiting_for_review_is_its_own_group() {
+    let mut env = attention_view(&[
+        instance_with_status("a-review", "/tmp/a", Status::Idle),
+        instance_with_status("b-person", "/tmp/b", Status::Idle),
+        instance_with_status("c-running", "/tmp/c", Status::Running),
+    ]);
+    let review = id_of(&env.view, "a-review");
+    let person = id_of(&env.view, "b-person");
+
+    env.view.selected_session = Some(person.clone());
+    env.view.toggle_waiting_on_others_at_cursor().unwrap();
+    env.view.selected_session = Some(review.clone());
+    env.view.toggle_waiting_for_review_at_cursor().unwrap();
+    env.view.reload().unwrap();
+    assert_eq!(
+        session_titles(&env.view),
+        ["b-person", "a-review", "c-running"]
+    );
+    assert!(env
+        .view
+        .get_instance(&review)
+        .unwrap()
+        .is_waiting_for_review());
+
+    // The other palette action switches the kind, and a repeat of the same one clears it.
+    env.view.selected_session = Some(review.clone());
+    env.view.toggle_waiting_on_others_at_cursor().unwrap();
+    let inst = env.view.get_instance(&review).unwrap();
+    assert!(inst.is_waiting_on_others() && !inst.is_waiting_for_review());
+    env.view.toggle_waiting_on_others_at_cursor().unwrap();
+    assert!(!env
+        .view
+        .get_instance(&review)
+        .unwrap()
+        .is_waiting_on_others());
+}
+
+/// A row moves the moment its status changes, not at the next reload.
+#[test]
+#[serial]
+fn attention_sort_moves_a_row_when_its_status_changes() {
+    use crate::tui::status_poller::IdleIntent;
+    let mut env = attention_view(&[
+        instance_with_status("a-working", "/tmp/a", Status::Running),
+        instance_with_status("b-idle", "/tmp/b", Status::Idle),
+    ]);
+    assert_eq!(session_titles(&env.view), ["b-idle", "a-working"]);
+
+    let working = id_of(&env.view, "a-working");
+    env.view
+        .apply_one_status_update(status_update(&working, Status::Idle, IdleIntent::Keep));
+    assert_eq!(session_titles(&env.view), ["a-working", "b-idle"]);
+}
+
+/// A row waiting on a command it started sits in its own group, below the rows that need the user.
+#[test]
+#[serial]
+fn attention_sort_groups_rows_waiting_on_a_command() {
+    let mut env = attention_view(&[
+        instance_with_status("a-ci", "/tmp/a", Status::Idle),
+        instance_with_status("b-idle", "/tmp/b", Status::Idle),
+        instance_with_status("c-running", "/tmp/c", Status::Running),
+    ]);
+    assert_eq!(session_titles(&env.view), ["a-ci", "b-idle", "c-running"]);
+
+    let ci = id_of(&env.view, "a-ci");
+    env.view.background.seed_for_test(&ci, true);
+    env.view.rebuild_flat_items();
+    assert_eq!(session_titles(&env.view), ["b-idle", "a-ci", "c-running"]);
+}
+
 /// Trashing a session hides it from the active list and surfaces it under
 /// the synthetic Trash section; the shelve/unshelve key (`z`) restores it.
 #[test]

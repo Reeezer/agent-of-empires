@@ -881,8 +881,9 @@ fn title_width_for_column(
 }
 
 /// The activity column's text: remaining snooze under Attention sort, else the age of a
-/// resting (Idle or Unknown) row, else blank. `last_accessed_at` is only a fallback for a
-/// missing `idle_entered_at`; on an active row it reads as idle time.
+/// resting (Idle or Unknown) row, else blank. A row waiting on others counts from when the
+/// user marked it. `last_accessed_at` is only a fallback for a missing `idle_entered_at`; on
+/// an active row it reads as idle time.
 fn row_age(inst: &crate::session::Instance, in_attention: bool) -> String {
     if let Some(remaining) = in_attention.then(|| inst.snooze_remaining()).flatten() {
         return format_snooze_remaining(remaining);
@@ -890,7 +891,11 @@ fn row_age(inst: &crate::session::Instance, in_attention: bool) -> String {
     if !matches!(inst.status, Status::Idle | Status::Unknown) {
         return String::new();
     }
-    format_relative_age(inst.idle_entered_at.or(inst.last_accessed_at))
+    format_relative_age(
+        inst.waiting_on_others_since
+            .or(inst.idle_entered_at)
+            .or(inst.last_accessed_at),
+    )
 }
 
 impl HomeView {
@@ -971,7 +976,11 @@ impl HomeView {
         // just above the status bar.
         self.refresh_last_prompt();
         self.usage.refresh(self.instances.values().cloned());
-        self.background.refresh(self.instances.values());
+        if self.background.refresh(self.instances.values())
+            && self.sort_order == SortOrder::Attention
+        {
+            self.rebuild_flat_items_keeping_cursor();
+        }
         let last_prompt = self.last_prompt_footer_line();
 
         // Keep temporary feedback and the leader menu available with the bar hidden.
@@ -1792,13 +1801,23 @@ impl HomeView {
                                 && !inst.is_archived()
                                 && !inst.is_snoozed()
                                 && matches!(inst.status, Status::Idle | Status::Unknown);
+                            // A resting row the user marked as waiting on others needs no one yet.
+                            let on_others = !is_shown_dormant
+                                && !unread_resting
+                                && inst.is_waiting_on_others()
+                                && matches!(inst.status, Status::Idle | Status::Unknown);
                             // A stopped agent waiting on a command or monitor it started
                             // waits on that, not on the user. A working agent stays green.
                             let background = !is_shown_dormant
                                 && !unread_resting
+                                && !on_others
                                 && self.background.is_watching(inst);
                             let color = if background {
                                 theme.favorite
+                            } else if on_others && inst.is_waiting_for_review() {
+                                theme.waiting_for_review
+                            } else if on_others {
+                                theme.waiting_on_others
                             } else if is_shown_dormant && !unread_resting {
                                 theme.dormant()
                             } else {
@@ -1810,7 +1829,7 @@ impl HomeView {
                                         theme.idle_color_at_age(idle_age, self.idle_decay_window)
                                     }
                                     Status::Unknown if unread_resting => theme.unread,
-                                    Status::Unknown => theme.waiting,
+                                    Status::Unknown => theme.text,
                                     Status::Stopped => theme.dimmed,
                                     Status::Error => theme.error,
                                     Status::Starting => theme.dimmed,

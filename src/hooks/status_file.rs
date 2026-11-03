@@ -214,6 +214,14 @@ pub fn read_hook_urgent(instance_id: &str) -> bool {
     true
 }
 
+/// When the user last handed this instance's agent a prompt, from the identity hook's sidecar.
+/// `None` for an agent without that hook or before its first prompt.
+pub fn read_hook_prompt_time(instance_id: &str) -> Option<std::time::SystemTime> {
+    dir_guard::newest_session_id_mtime(instance_id)
+        .ok()
+        .flatten()
+}
+
 /// Remove the hook status directory for a given instance (cleanup on stop/delete).
 /// Symlink-safe via `dir_guard::remove_instance_dir` (`unlinkat` walk).
 pub fn cleanup_hook_status_dir(instance_id: &str) {

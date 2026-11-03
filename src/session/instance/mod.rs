@@ -206,6 +206,16 @@ pub struct Instance {
     pub favorited_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snoozed_until: Option<DateTime<Utc>>,
+    /// When the user marked this session as waiting on other people.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_on_others_since: Option<DateTime<Utc>>,
+    /// Kind of that wait: for a pull request review rather than a person's answer.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub waiting_for_review: bool,
+    /// Set on the dashboard's sort copy while the session waits on a command it started, which
+    /// only the dashboard can see; never persisted.
+    #[serde(skip)]
+    pub(crate) waiting_on_background: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unread: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]

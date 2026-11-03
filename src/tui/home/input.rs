@@ -2870,6 +2870,16 @@ impl HomeView {
                     tracing::error!("toggle_snooze_at_cursor failed: {}", e);
                 }
             }
+            ActionId::ToggleWaitingOnOthers => {
+                if let Err(e) = self.toggle_waiting_on_others_at_cursor() {
+                    tracing::error!("toggle_waiting_on_others_at_cursor failed: {}", e);
+                }
+            }
+            ActionId::ToggleWaitingForReview => {
+                if let Err(e) = self.toggle_waiting_for_review_at_cursor() {
+                    tracing::error!("toggle_waiting_for_review_at_cursor failed: {}", e);
+                }
+            }
             ActionId::ToggleUnread => {
                 if let Err(e) = self.toggle_unread_at_cursor() {
                     tracing::error!("toggle_unread_at_cursor failed: {}", e);

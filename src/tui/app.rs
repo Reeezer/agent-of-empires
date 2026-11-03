@@ -1285,6 +1285,7 @@ impl App {
                 last_status_refresh = std::time::Instant::now();
             }
             full |= self.home.apply_status_updates();
+            full |= self.home.end_waits_after_prompts();
 
             if last_metrics_sample.elapsed() >= METRICS_SAMPLE_INTERVAL {
                 self.home.request_metrics_refresh();

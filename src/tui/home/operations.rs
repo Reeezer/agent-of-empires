@@ -1820,6 +1820,42 @@ impl HomeView {
         Ok(())
     }
 
+    pub(super) fn toggle_waiting_on_others_at_cursor(&mut self) -> anyhow::Result<()> {
+        self.toggle_wait_at_cursor(false)
+    }
+
+    pub(super) fn toggle_waiting_for_review_at_cursor(&mut self) -> anyhow::Result<()> {
+        self.toggle_wait_at_cursor(true)
+    }
+
+    /// Clear the cursor session's wait when it already has this kind, otherwise set it with this
+    /// kind. The sort moves the row on the rebuild, so the flash is the feedback.
+    fn toggle_wait_at_cursor(&mut self, review: bool) -> anyhow::Result<()> {
+        let Some(id) = self.selected_session.clone() else {
+            return Ok(());
+        };
+        let Some(inst) = self.instances.get(&id) else {
+            return Ok(());
+        };
+        let label = if review { "for review" } else { "on others" };
+        let message = if inst.is_waiting_on_others() && inst.is_waiting_for_review() == review {
+            self.apply_user_action(&id, |inst| inst.stop_waiting_on_others())?;
+            format!("No longer waiting {label}")
+        } else {
+            self.apply_user_action(&id, |inst| {
+                if review {
+                    inst.wait_for_review()
+                } else {
+                    inst.wait_on_others()
+                }
+            })?;
+            format!("Waiting {label}")
+        };
+        self.rebuild_flat_items_keeping_cursor();
+        self.flash_status(message);
+        Ok(())
+    }
+
     /// The session the cursor should land on once the cursor's row is archived: the
     /// nearest visible non-archived session below, else above. Rows inside collapsed
     /// groups and rows already under the Archived section are not candidates, so the

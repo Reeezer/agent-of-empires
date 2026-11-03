@@ -33,6 +33,9 @@ This document contains the help content for the `aoe` command-line program.
 * [`aoe session unsnooze`↴](#aoe-session-unsnooze)
 * [`aoe session favorite`↴](#aoe-session-favorite)
 * [`aoe session unfavorite`↴](#aoe-session-unfavorite)
+* [`aoe session wait-on`↴](#aoe-session-wait-on)
+* [`aoe session wait-review`↴](#aoe-session-wait-review)
+* [`aoe session wait-off`↴](#aoe-session-wait-off)
 * [`aoe session color`↴](#aoe-session-color)
 * [`aoe session archive`↴](#aoe-session-archive)
 * [`aoe session unarchive`↴](#aoe-session-unarchive)
@@ -428,6 +431,9 @@ Manage session lifecycle (start, stop, attach, etc.)
 * `unsnooze` — Wake a snoozed session immediately
 * `favorite` — Mark a session as a favorite. With `session.favorites_first` on (the default), favorited rows pin to the top of their sibling scope in every sort order; with it off, they pin within their status tier in the Attention sort only. Either way the row shows a `✦` in the session list gutter wherever the pin applies. Snoozing a favorite suspends the pin until it wakes
 * `unfavorite` — Clear the favorite flag on a session
+* `wait-on` — Mark a session as waiting on other people (a Slack reply, a review). The row gets its own glyph and the Attention sort files it below the sessions that need you. Intended for a running agent to flag its own session, e.g. `aoe session wait-on "$AOE_INSTANCE_ID"`
+* `wait-review` — Mark a session as waiting for a review of its pull request. Like `wait-on`, with its own color and its own place in the Attention sort, e.g. `aoe session wait-review "$AOE_INSTANCE_ID"`
+* `wait-off` — Clear the waiting-on-others or waiting-for-review mark on a session
 * `color` — Set (or clear) a per-session color label, rendered as a colored dot in the web sidebar for at-a-glance status signaling. Intended for a running agent to flag its own state, e.g. `aoe session color $(aoe session current -q) red`. Colors: `red` (needs attention), `amber` (working), `green` (done); `none` clears it
 * `archive` — Archive a session: sink it in the Attention sort and tear down its tmux sessions. Worktree, branch, container preserved. `--no-kill` skips tmux teardown. See #1868
 * `unarchive` — Unarchive a session (restores it to its tier in the Attention sort)
@@ -675,6 +681,42 @@ Mark a session as a favorite. With `session.favorites_first` on (the default), f
 Clear the favorite flag on a session
 
 **Usage:** `aoe session unfavorite <IDENTIFIER>`
+
+###### **Arguments:**
+
+* `<IDENTIFIER>` — Session ID or title
+
+
+
+## `aoe session wait-on`
+
+Mark a session as waiting on other people (a Slack reply, a review). The row gets its own glyph and the Attention sort files it below the sessions that need you. Intended for a running agent to flag its own session, e.g. `aoe session wait-on "$AOE_INSTANCE_ID"`
+
+**Usage:** `aoe session wait-on <IDENTIFIER>`
+
+###### **Arguments:**
+
+* `<IDENTIFIER>` — Session ID or title
+
+
+
+## `aoe session wait-review`
+
+Mark a session as waiting for a review of its pull request. Like `wait-on`, with its own color and its own place in the Attention sort, e.g. `aoe session wait-review "$AOE_INSTANCE_ID"`
+
+**Usage:** `aoe session wait-review <IDENTIFIER>`
+
+###### **Arguments:**
+
+* `<IDENTIFIER>` — Session ID or title
+
+
+
+## `aoe session wait-off`
+
+Clear the waiting-on-others or waiting-for-review mark on a session
+
+**Usage:** `aoe session wait-off <IDENTIFIER>`
 
 ###### **Arguments:**
 

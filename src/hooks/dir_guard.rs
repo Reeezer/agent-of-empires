@@ -448,6 +448,31 @@ pub(crate) fn session_id_leaf(source: Option<&str>) -> Result<std::borrow::Cow<'
     Ok(std::borrow::Cow::Owned(format!("session_id.{source}")))
 }
 
+/// Newest modification time among the instance's `session_id*` sidecars. The identity hook
+/// rewrites one each time the agent is handed a prompt, so this is when the user last wrote to
+/// it, whether through aoe or typing in an attached pane.
+pub(crate) fn newest_session_id_mtime(instance_id: &str) -> Result<Option<std::time::SystemTime>> {
+    let Some(dir) = open_instance_dir_read_only(instance_id)? else {
+        return Ok(None);
+    };
+    let dup = dir.try_clone().context("dup dir fd for readdir")?;
+    let mut listing = nix::dir::Dir::from_fd(dup).context("Dir::from_fd")?;
+    let names: Vec<String> = listing
+        .iter()
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| entry.file_name().to_str().ok().map(str::to_owned))
+        .filter(|name| name == "session_id" || name.starts_with("session_id."))
+        .collect();
+    drop(listing);
+    let mut newest = None;
+    for name in names {
+        if let Ok(Some(metadata)) = metadata_at(dir.as_fd(), &name) {
+            newest = newest.max(metadata.modified().ok());
+        }
+    }
+    Ok(newest)
+}
+
 pub(crate) fn write_session_id_via_guard(
     instance_id: &str,
     session_id: &str,

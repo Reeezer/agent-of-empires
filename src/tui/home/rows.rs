@@ -95,12 +95,17 @@ impl HomeView {
         map
     }
 
-    /// Instances in the active profile filter, or all of them.
+    /// Instances in the active profile filter, or all of them, as the sorts see them: a row
+    /// waiting on a command it started is flagged, which only the dashboard can tell.
     pub(in crate::tui) fn cloned_instances_in_active_view(&self) -> Vec<Instance> {
-        match &self.active_profile {
+        let mut pool = match &self.active_profile {
             Some(profile) => self.cloned_instances_for_profile(profile),
             None => self.cloned_instances(),
+        };
+        for inst in &mut pool {
+            inst.waiting_on_background = self.background.is_watching(inst);
         }
+        pool
     }
 
     #[cfg(test)]

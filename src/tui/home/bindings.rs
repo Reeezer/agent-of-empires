@@ -56,6 +56,11 @@ pub enum ActionId {
     JumpPrevFinished,
     JumpNextFinished,
     ToggleSnooze,
+    /// Mark or unmark the selected session as waiting on other people. Palette-only: every
+    /// bare chord is taken.
+    ToggleWaitingOnOthers,
+    /// As [`Self::ToggleWaitingOnOthers`], for a pull request review.
+    ToggleWaitingForReview,
     /// Toggle the selected session's unread marker. Gated behind
     /// `session.unread_indicator` (on by default); a no-op when disabled.
     ToggleUnread,
@@ -504,6 +509,30 @@ pub static BINDINGS: &[Binding] = &[
         palette: Some(PaletteMeta {
             title: "Toggle snooze",
             keywords: &["later", "defer", "wait"],
+            group: PaletteGroup::Actions,
+        }),
+    },
+    Binding {
+        id: ActionId::ToggleWaitingOnOthers,
+        non_strict: &[],
+        strict: &[],
+        context: Context::Always,
+        help: None,
+        palette: Some(PaletteMeta {
+            title: "Toggle waiting on others",
+            keywords: &["slack", "reply", "blocked", "asked", "review", "ci"],
+            group: PaletteGroup::Actions,
+        }),
+    },
+    Binding {
+        id: ActionId::ToggleWaitingForReview,
+        non_strict: &[],
+        strict: &[],
+        context: Context::Always,
+        help: None,
+        palette: Some(PaletteMeta {
+            title: "Toggle waiting for review",
+            keywords: &["review", "pr", "pull", "approval", "reviewer"],
             group: PaletteGroup::Actions,
         }),
     },
@@ -1156,6 +1185,8 @@ pub fn palette_id(id: ActionId) -> &'static str {
         ActionId::JumpPrevFinished => "previous working or just-finished session",
         ActionId::JumpNextFinished => "next working or just-finished session",
         ActionId::ToggleSnooze => "snooze",
+        ActionId::ToggleWaitingOnOthers => "waiting-on-others",
+        ActionId::ToggleWaitingForReview => "waiting-for-review",
         ActionId::ToggleUnread => "toggle-unread",
         ActionId::TogglePreviewInfo => "toggle-preview-info",
         ActionId::ToggleSplitTerminal => "toggle-split-terminal",

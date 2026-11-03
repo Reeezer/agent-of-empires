@@ -39,8 +39,11 @@ impl BackgroundPoller {
         }
     }
 
-    pub(super) fn refresh<'a>(&mut self, instances: impl Iterator<Item = &'a Instance>) {
+    /// Returns whether the set of watching rows changed.
+    pub(super) fn refresh<'a>(&mut self, instances: impl Iterator<Item = &'a Instance>) -> bool {
+        let mut changed = false;
         if let Ok(watching) = self.worker.try_recv() {
+            changed = watching != self.watching;
             self.watching = watching;
             self.pending = false;
             self.last_refresh = Some(Instant::now());
@@ -50,7 +53,7 @@ impl BackgroundPoller {
                 .last_refresh
                 .is_some_and(|at| at.elapsed() < REFRESH_INTERVAL)
         {
-            return;
+            return changed;
         }
         let requests: Requests = instances
             .filter(|instance| match instance.tool.as_str() {
@@ -68,10 +71,11 @@ impl BackgroundPoller {
             })
             .collect();
         if requests.is_empty() {
-            return;
+            return changed;
         }
         self.worker.request(requests);
         self.pending = true;
+        changed
     }
 
     /// A row that changed between idle and running since the check is not watching until the next one.

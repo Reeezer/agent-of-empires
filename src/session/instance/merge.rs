@@ -308,6 +308,16 @@ impl Instance {
             &pre.snoozed_until,
             &post.snoozed_until,
         );
+        splice(
+            &mut self.waiting_on_others_since,
+            &pre.waiting_on_others_since,
+            &post.waiting_on_others_since,
+        );
+        splice(
+            &mut self.waiting_for_review,
+            &pre.waiting_for_review,
+            &post.waiting_for_review,
+        );
         splice(&mut self.pinned_at, &pre.pinned_at, &post.pinned_at);
         splice(&mut self.trashed_at, &pre.trashed_at, &post.trashed_at);
         splice(

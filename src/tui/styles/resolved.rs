@@ -319,6 +319,14 @@ fn web_projection(theme: &Theme, appearance: ThemeAppearance) -> CssVarProjectio
     css.insert("--color-branch".into(), hex(theme.branch));
     css.insert("--color-sandbox".into(), hex(theme.sandbox));
     css.insert("--color-favorite".into(), hex(theme.favorite));
+    css.insert(
+        "--color-waiting-on-others".into(),
+        hex(theme.waiting_on_others),
+    );
+    css.insert(
+        "--color-waiting-for-review".into(),
+        hex(theme.waiting_for_review),
+    );
 
     CssVarProjection { css_vars: css }
 }
@@ -823,6 +831,8 @@ mod tests {
                     | "branch"
                     | "sandbox"
                     | "favorite"
+                    | "waiting-on-others"
+                    | "waiting-for-review"
             )
     }
 }
